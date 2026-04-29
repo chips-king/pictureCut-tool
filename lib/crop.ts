@@ -290,11 +290,183 @@ function buildSignals(image: AnalysisImage, palette: Rgb[]) {
   };
 }
 
+function darkRatioInRow(image: AnalysisImage, y: number, left = 0, right = image.width - 1, threshold = 30) {
+  const safeLeft = clamp(left, 0, image.width - 1);
+  const safeRight = clamp(right, safeLeft, image.width - 1);
+  const step = Math.max(1, Math.floor((safeRight - safeLeft + 1) / 180));
+  let dark = 0;
+  let count = 0;
+
+  for (let x = safeLeft; x <= safeRight; x += step) {
+    const color = pixelAt(image, x, y);
+    if (luminance(color) <= threshold) dark++;
+    count++;
+  }
+
+  return count > 0 ? dark / count : 0;
+}
+
+function darkRatioInCol(image: AnalysisImage, x: number, top = 0, bottom = image.height - 1, threshold = 30) {
+  const safeTop = clamp(top, 0, image.height - 1);
+  const safeBottom = clamp(bottom, safeTop, image.height - 1);
+  const step = Math.max(1, Math.floor((safeBottom - safeTop + 1) / 180));
+  let dark = 0;
+  let count = 0;
+
+  for (let y = safeTop; y <= safeBottom; y += step) {
+    const color = pixelAt(image, x, y);
+    if (luminance(color) <= threshold) dark++;
+    count++;
+  }
+
+  return count > 0 ? dark / count : 0;
+}
+
+function averageDarkRatioInRows(image: AnalysisImage, start: number, end: number) {
+  const safeStart = clamp(start, 0, image.height - 1);
+  const safeEnd = clamp(end, safeStart, image.height - 1);
+  const step = Math.max(1, Math.floor((safeEnd - safeStart + 1) / 32));
+  let sum = 0;
+  let count = 0;
+
+  for (let y = safeStart; y <= safeEnd; y += step) {
+    sum += darkRatioInRow(image, y);
+    count++;
+  }
+
+  return count > 0 ? sum / count : 0;
+}
+
+function detectFastBlackMatte(image: AnalysisImage) {
+  const rowDark = new Array<number>(image.height);
+  for (let y = 0; y < image.height; y++) {
+    rowDark[y] = darkRatioInRow(image, y);
+  }
+
+  const matteThreshold = 0.72;
+  const contentThreshold = 0.52;
+  const minBand = Math.floor(image.height * 0.08);
+  const minContentHeight = Math.floor(image.height * 0.16);
+  const stableRows = Math.max(2, Math.floor(image.height * 0.006));
+
+  const isContentRow = (index: number) => {
+    let hits = 0;
+    let count = 0;
+    for (let offset = 0; offset < stableRows; offset++) {
+      const value = rowDark[index + offset];
+      if (value === undefined) break;
+      if (value < contentThreshold) hits++;
+      count++;
+    }
+    return count > 0 && hits / count >= 0.7;
+  };
+
+  let top = -1;
+  for (let y = 0; y < image.height; y++) {
+    if (isContentRow(y)) {
+      top = y;
+      break;
+    }
+  }
+
+  let bottom = -1;
+  for (let y = image.height - 1; y >= 0; y--) {
+    let hits = 0;
+    let count = 0;
+    for (let offset = 0; offset < stableRows; offset++) {
+      const value = rowDark[y - offset];
+      if (value === undefined) break;
+      if (value < contentThreshold) hits++;
+      count++;
+    }
+    if (count > 0 && hits / count >= 0.7) {
+      bottom = y;
+      break;
+    }
+  }
+
+  if (top < 0 || bottom < top || bottom - top + 1 < minContentHeight) return null;
+
+  const hasTopMatte = top >= minBand && averageDarkRatioInRows(image, 0, top - 1) >= matteThreshold;
+  const hasBottomMatte =
+    image.height - 1 - bottom >= minBand && averageDarkRatioInRows(image, bottom + 1, image.height - 1) >= matteThreshold;
+  if (!hasTopMatte && !hasBottomMatte) return null;
+
+  let left = 0;
+  let right = image.width - 1;
+  const minSideBand = Math.floor(image.width * 0.06);
+  const colContentThreshold = 0.58;
+
+  if (darkRatioInCol(image, 0, top, bottom) >= matteThreshold) {
+    for (let x = 0; x < image.width; x++) {
+      if (darkRatioInCol(image, x, top, bottom) < colContentThreshold) {
+        left = x;
+        break;
+      }
+    }
+  }
+
+  if (darkRatioInCol(image, image.width - 1, top, bottom) >= matteThreshold) {
+    for (let x = image.width - 1; x >= left; x--) {
+      if (darkRatioInCol(image, x, top, bottom) < colContentThreshold) {
+        right = x;
+        break;
+      }
+    }
+  }
+
+  const hasSideMatte = left >= minSideBand || image.width - 1 - right >= minSideBand;
+  const box = refineBlackEdges(image, {
+    left: hasSideMatte ? left : 0,
+    top,
+    width: hasSideMatte ? right - left + 1 : image.width,
+    height: bottom - top + 1
+  });
+
+  return scoreBox(image, box, "black-matte", hasTopMatte && hasBottomMatte ? 1.25 : 0.9);
+}
+
+function refineBlackEdges(image: AnalysisImage, box: CropBox): CropBox {
+  let left = clamp(box.left, 0, image.width - 2);
+  let top = clamp(box.top, 0, image.height - 2);
+  let right = clamp(box.left + box.width - 1, left + 1, image.width - 1);
+  let bottom = clamp(box.top + box.height - 1, top + 1, image.height - 1);
+  const maxTrimX = Math.max(1, Math.floor((right - left + 1) * 0.025));
+  const maxTrimY = Math.max(1, Math.floor((bottom - top + 1) * 0.025));
+  const edgeThreshold = 0.68;
+
+  for (let i = 0; i < maxTrimY && bottom - top > 2 && darkRatioInRow(image, top, left, right) >= edgeThreshold; i++) {
+    top++;
+  }
+
+  for (let i = 0; i < maxTrimY && bottom - top > 2 && darkRatioInRow(image, bottom, left, right) >= edgeThreshold; i++) {
+    bottom--;
+  }
+
+  for (let i = 0; i < maxTrimX && right - left > 2 && darkRatioInCol(image, left, top, bottom) >= edgeThreshold; i++) {
+    left++;
+  }
+
+  for (let i = 0; i < maxTrimX && right - left > 2 && darkRatioInCol(image, right, top, bottom) >= edgeThreshold; i++) {
+    right--;
+  }
+
+  return { left, top, width: right - left + 1, height: bottom - top + 1 };
+}
+
 function mapBoxToOriginal(box: CropBox, image: AnalysisImage): CropBox {
   const left = clamp(Math.floor(box.left * image.scaleX), 0, image.originalWidth - 2);
   const top = clamp(Math.floor(box.top * image.scaleY), 0, image.originalHeight - 2);
   const right = clamp(Math.ceil((box.left + box.width) * image.scaleX), left + 1, image.originalWidth);
   const bottom = clamp(Math.ceil((box.top + box.height) * image.scaleY), top + 1, image.originalHeight);
+  return { left, top, width: right - left, height: bottom - top };
+}
+
+function mapBoxToOriginalTight(box: CropBox, image: AnalysisImage): CropBox {
+  const left = clamp(Math.ceil(box.left * image.scaleX), 0, image.originalWidth - 2);
+  const top = clamp(Math.ceil(box.top * image.scaleY), 0, image.originalHeight - 2);
+  const right = clamp(Math.floor((box.left + box.width) * image.scaleX), left + 1, image.originalWidth);
+  const bottom = clamp(Math.floor((box.top + box.height) * image.scaleY), top + 1, image.originalHeight);
   return { left, top, width: right - left, height: bottom - top };
 }
 
@@ -664,6 +836,27 @@ function normalizeCandidate(candidate: Candidate, image: AnalysisImage): Candida
 }
 
 function detectCropBox(image: AnalysisImage) {
+  const fastBlackMatte = detectFastBlackMatte(image);
+  if (fastBlackMatte) {
+    const refined = refineBlackEdges(image, fastBlackMatte.box);
+    const cropBox = mapBoxToOriginalTight(refined, image);
+    return {
+      box: cropBox,
+      confidence: 0.96,
+      detector: fastBlackMatte.detector,
+      fallback: false,
+      background: [],
+      candidates: [
+        {
+          detector: fastBlackMatte.detector,
+          score: Number(fastBlackMatte.score.toFixed(3)),
+          confidence: 0.96,
+          cropBox
+        }
+      ]
+    };
+  }
+
   const palette = estimateBackgroundPalette(image);
   const signals = buildSignals(image, palette);
   const fallback = scoreBox(image, fallbackBox(image.width, image.height), "fallback", -0.15);
@@ -689,8 +882,9 @@ function detectCropBox(image: AnalysisImage) {
     .sort((a, b) => b.score - a.score);
 
   const best = candidates[0] ?? fallback;
+  const refined = refineBlackEdges(image, best.box);
   return {
-    box: mapBoxToOriginal(best.box, image),
+    box: mapBoxToOriginalTight(refined, image),
     confidence: best.confidence,
     detector: best.detector,
     fallback: best.fallback ?? false,
@@ -702,7 +896,7 @@ function detectCropBox(image: AnalysisImage) {
       backgroundRatio: candidate.metrics ? Number(candidate.metrics.backgroundRatio.toFixed(3)) : undefined,
       edgeScore: candidate.metrics ? Number(candidate.metrics.edgeScore.toFixed(3)) : undefined,
       contentDensity: candidate.metrics ? Number(candidate.metrics.contentDensity.toFixed(3)) : undefined,
-      cropBox: mapBoxToOriginal(candidate.box, image)
+      cropBox: mapBoxToOriginalTight(refineBlackEdges(image, candidate.box), image)
     }))
   };
 }
