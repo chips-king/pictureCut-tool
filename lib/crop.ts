@@ -66,6 +66,23 @@ type CandidateMetrics = {
   contentDensity: number;
 };
 
+type DetectionResult = {
+  box: CropBox;
+  confidence: number;
+  detector: string;
+  fallback: boolean;
+  background: Rgb[];
+  candidates: Array<{
+    detector: string;
+    score: number;
+    confidence: number;
+    backgroundRatio?: number;
+    edgeScore?: number;
+    contentDensity?: number;
+    cropBox: CropBox;
+  }>;
+};
+
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 function rgbDistance(a: Rgb, b: Rgb) {
@@ -337,6 +354,21 @@ function averageDarkRatioInRows(image: AnalysisImage, start: number, end: number
   return count > 0 ? sum / count : 0;
 }
 
+function averageDarkRatioInCols(image: AnalysisImage, start: number, end: number, top = 0, bottom = image.height - 1) {
+  const safeStart = clamp(start, 0, image.width - 1);
+  const safeEnd = clamp(end, safeStart, image.width - 1);
+  const step = Math.max(1, Math.floor((safeEnd - safeStart + 1) / 32));
+  let sum = 0;
+  let count = 0;
+
+  for (let x = safeStart; x <= safeEnd; x += step) {
+    sum += darkRatioInCol(image, x, top, bottom);
+    count++;
+  }
+
+  return count > 0 ? sum / count : 0;
+}
+
 function detectFastBlackMatte(image: AnalysisImage) {
   const rowDark = new Array<number>(image.height);
   for (let y = 0; y < image.height; y++) {
@@ -452,6 +484,570 @@ function refineBlackEdges(image: AnalysisImage, box: CropBox): CropBox {
   }
 
   return { left, top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+function colorSpreadInRow(image: AnalysisImage, y: number, left = 0, right = image.width - 1) {
+  const safeLeft = clamp(left, 0, image.width - 1);
+  const safeRight = clamp(right, safeLeft, image.width - 1);
+  const step = Math.max(1, Math.floor((safeRight - safeLeft + 1) / 160));
+  const samples: Rgb[] = [];
+
+  for (let x = safeLeft; x <= safeRight; x += step) {
+    samples.push(pixelAt(image, x, y));
+  }
+
+  const base = rowAverageColor(image, y, safeLeft, safeRight);
+  return samples.reduce((sum, color) => sum + rgbDistance(color, base), 0) / Math.max(1, samples.length);
+}
+
+function colorSpreadInCol(image: AnalysisImage, x: number, top = 0, bottom = image.height - 1) {
+  const safeTop = clamp(top, 0, image.height - 1);
+  const safeBottom = clamp(bottom, safeTop, image.height - 1);
+  const step = Math.max(1, Math.floor((safeBottom - safeTop + 1) / 160));
+  const samples: Rgb[] = [];
+
+  for (let y = safeTop; y <= safeBottom; y += step) {
+    samples.push(pixelAt(image, x, y));
+  }
+
+  const base = colAverageColor(image, x, safeTop, safeBottom);
+  return samples.reduce((sum, color) => sum + rgbDistance(color, base), 0) / Math.max(1, samples.length);
+}
+
+function trimSolidEdges(image: AnalysisImage, box: CropBox): { box: CropBox; trimmed: boolean } {
+  let left = clamp(box.left, 0, image.width - 2);
+  let top = clamp(box.top, 0, image.height - 2);
+  let right = clamp(box.left + box.width - 1, left + 1, image.width - 1);
+  let bottom = clamp(box.top + box.height - 1, top + 1, image.height - 1);
+  const maxTrimX = Math.max(2, Math.floor((right - left + 1) * 0.22));
+  const maxTrimY = Math.max(2, Math.floor((bottom - top + 1) * 0.18));
+  const minWidth = Math.max(16, Math.floor(box.width * 0.45));
+  const minHeight = Math.max(16, Math.floor(box.height * 0.45));
+  const solidSpread = 9;
+  const darkThreshold = 0.78;
+  let trimmed = false;
+
+  const isSolidRow = (y: number) =>
+    darkRatioInRow(image, y, left, right, 38) >= darkThreshold || colorSpreadInRow(image, y, left, right) <= solidSpread;
+  const isSolidCol = (x: number) =>
+    darkRatioInCol(image, x, top, bottom, 38) >= darkThreshold || colorSpreadInCol(image, x, top, bottom) <= solidSpread;
+
+  for (let i = 0; i < maxTrimY && bottom - top + 1 > minHeight && isSolidRow(top); i++) {
+    top++;
+    trimmed = true;
+  }
+
+  for (let i = 0; i < maxTrimY && bottom - top + 1 > minHeight && isSolidRow(bottom); i++) {
+    bottom--;
+    trimmed = true;
+  }
+
+  for (let i = 0; i < maxTrimX && right - left + 1 > minWidth && isSolidCol(left); i++) {
+    left++;
+    trimmed = true;
+  }
+
+  for (let i = 0; i < maxTrimX && right - left + 1 > minWidth && isSolidCol(right); i++) {
+    right--;
+    trimmed = true;
+  }
+
+  if (trimmed) {
+    const insetX = right - left > 80 ? 1 : 0;
+    const insetY = bottom - top > 80 ? 1 : 0;
+    left = clamp(left + insetX, 0, image.width - 2);
+    top = clamp(top + insetY, 0, image.height - 2);
+    right = clamp(right - insetX, left + 1, image.width - 1);
+    bottom = clamp(bottom - insetY, top + 1, image.height - 1);
+  }
+
+  return { box: { left, top, width: right - left + 1, height: bottom - top + 1 }, trimmed };
+}
+
+function trimOuterPageEdges(image: AnalysisImage, box: CropBox, palette: Rgb[]): CropBox {
+  let left = clamp(box.left, 0, image.width - 2);
+  let top = clamp(box.top, 0, image.height - 2);
+  let right = clamp(box.left + box.width - 1, left + 1, image.width - 1);
+  let bottom = clamp(box.top + box.height - 1, top + 1, image.height - 1);
+  const tolerance = clamp(Math.min(image.width, image.height) / 18, 20, 42);
+  const maxTrimX = Math.max(2, Math.floor((right - left + 1) * 0.028));
+  const maxTrimY = Math.max(2, Math.floor((bottom - top + 1) * 0.022));
+
+  const looksLikePageChrome = (color: Rgb, spread: number, dark: number) => {
+    const luma = luminance(color);
+    return spread < 12 && (isNearPalette(color, palette, tolerance) || luma > 238 || luma < 48 || dark > 0.88);
+  };
+
+  const isOuterRow = (y: number, direction: 1 | -1) => {
+    const color = rowAverageColor(image, y, left, right);
+    const spread = colorSpreadInRow(image, y, left, right);
+    const dark = darkRatioInRow(image, y, left, right, 42);
+    const probeY = clamp(y + direction * Math.max(3, Math.floor((bottom - top + 1) * 0.03)), top, bottom);
+    const probeSpread = colorSpreadInRow(image, probeY, left, right);
+    const probeDistance = rgbDistance(color, rowAverageColor(image, probeY, left, right));
+    return looksLikePageChrome(color, spread, dark) && (probeDistance > 10 || probeSpread > 16);
+  };
+
+  const isOuterCol = (x: number, direction: 1 | -1) => {
+    const color = colAverageColor(image, x, top, bottom);
+    const spread = colorSpreadInCol(image, x, top, bottom);
+    const dark = darkRatioInCol(image, x, top, bottom, 42);
+    const probeX = clamp(x + direction * Math.max(3, Math.floor((right - left + 1) * 0.03)), left, right);
+    const probeSpread = colorSpreadInCol(image, probeX, top, bottom);
+    const probeDistance = rgbDistance(color, colAverageColor(image, probeX, top, bottom));
+    return looksLikePageChrome(color, spread, dark) && (probeDistance > 10 || probeSpread > 16);
+  };
+
+  for (let i = 0; i < maxTrimY && bottom - top > 2 && isOuterRow(top, 1); i++) top++;
+  for (let i = 0; i < maxTrimY && bottom - top > 2 && isOuterRow(bottom, -1); i++) bottom--;
+  for (let i = 0; i < maxTrimX && right - left > 2 && isOuterCol(left, 1); i++) left++;
+  for (let i = 0; i < maxTrimX && right - left > 2 && isOuterCol(right, -1); i++) right--;
+
+  return { left, top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+function rowContentActivity(image: AnalysisImage, y: number, left: number, right: number, palette: Rgb[]) {
+  const safeLeft = clamp(left, 0, image.width - 1);
+  const safeRight = clamp(right, safeLeft, image.width - 1);
+  const tolerance = clamp(Math.min(image.width, image.height) / 18, 20, 42);
+  const step = Math.max(1, Math.floor((safeRight - safeLeft + 1) / 180));
+  let active = 0;
+  let count = 0;
+
+  for (let x = safeLeft; x <= safeRight; x += step) {
+    const color = pixelAt(image, x, y);
+    const spread = Math.max(...color) - Math.min(...color);
+    if (!isNearPalette(color, palette, tolerance) || luminance(color) < 232 || spread > 18) {
+      active++;
+    }
+    count++;
+  }
+
+  return count > 0 ? active / count : 0;
+}
+
+function trimDetailTextTail(image: AnalysisImage, box: CropBox, palette: Rgb[]): { box: CropBox; trimmed: boolean } {
+  const left = clamp(box.left, 0, image.width - 2);
+  const top = clamp(box.top, 0, image.height - 2);
+  const right = clamp(box.left + box.width - 1, left + 1, image.width - 1);
+  const bottom = clamp(box.top + box.height - 1, top + 1, image.height - 1);
+  const minBottom = top + Math.floor(box.height * 0.58);
+  const stable = Math.max(2, Math.floor(box.height * 0.006));
+  const lowActivity = 0.24;
+  const imageActivity = 0.36;
+
+  let lowRun = 0;
+  for (let y = bottom; y > minBottom; y--) {
+    const activity = rowContentActivity(image, y, left, right, palette);
+    if (activity <= lowActivity) {
+      lowRun++;
+      continue;
+    }
+
+    if (activity >= imageActivity && lowRun >= stable) {
+      const newBottom = clamp(y + Math.max(1, Math.floor(stable / 2)), top + 1, bottom);
+      if (bottom - newBottom > image.height * 0.025) {
+        return { box: { left, top, width: right - left + 1, height: newBottom - top + 1 }, trimmed: true };
+      }
+      break;
+    }
+
+    lowRun = 0;
+  }
+
+  return { box: { left, top, width: right - left + 1, height: bottom - top + 1 }, trimmed: false };
+}
+
+function strongestGradientBetween(values: number[], start: number, end: number) {
+  const safeStart = clamp(start, 0, values.length - 1);
+  const safeEnd = clamp(end, safeStart, values.length - 1);
+  let best = safeStart;
+  let bestValue = -1;
+
+  for (let i = safeStart; i <= safeEnd; i++) {
+    if ((values[i] ?? 0) > bestValue) {
+      best = i;
+      bestValue = values[i] ?? 0;
+    }
+  }
+
+  return { index: best, value: bestValue };
+}
+
+function refineFullWidthDetailEdges(image: AnalysisImage, box: CropBox, rowGradient: number[]): { box: CropBox; trimmed: boolean } {
+  if (box.width < image.width * 0.9) return { box, trimmed: false };
+
+  const left = clamp(box.left, 0, image.width - 2);
+  let top = clamp(box.top, 0, image.height - 2);
+  const right = clamp(box.left + box.width - 1, left + 1, image.width - 1);
+  let bottom = clamp(box.top + box.height - 1, top + 1, image.height - 1);
+  const topSearch = strongestGradientBetween(
+    rowGradient,
+    Math.max(top, Math.floor(image.height * 0.1)),
+    Math.min(bottom - 2, top + Math.floor(image.height * 0.12))
+  );
+  const bottomSearch = strongestGradientBetween(
+    rowGradient,
+    Math.max(top + Math.floor((bottom - top + 1) * 0.58), top + 2),
+    bottom
+  );
+  let trimmed = false;
+
+  if (topSearch.value > 0.04 && topSearch.index - top > image.height * 0.015) {
+    top = topSearch.index;
+    trimmed = true;
+  }
+
+  if (bottomSearch.value > 0.04 && bottom - bottomSearch.index > image.height * 0.015) {
+    bottom = bottomSearch.index;
+    trimmed = true;
+  }
+
+  return { box: { left, top, width: right - left + 1, height: bottom - top + 1 }, trimmed };
+}
+
+function averageRowSpread(image: AnalysisImage, start: number, end: number, left = 0, right = image.width - 1) {
+  const safeStart = clamp(start, 0, image.height - 1);
+  const safeEnd = clamp(end, safeStart, image.height - 1);
+  const step = Math.max(1, Math.floor((safeEnd - safeStart + 1) / 10));
+  let sum = 0;
+  let count = 0;
+
+  for (let y = safeStart; y <= safeEnd; y += step) {
+    sum += colorSpreadInRow(image, y, left, right);
+    count++;
+  }
+
+  return count > 0 ? sum / count : 0;
+}
+
+function findDetailMediaTop(image: AnalysisImage, rowGradient: number[], palette: Rgb[]) {
+  const searchStart = Math.floor(image.height * 0.125);
+  const searchEnd = Math.floor(image.height * 0.22);
+  let best = -1;
+  let bestScore = -1;
+
+  for (let y = searchStart; y <= searchEnd; y++) {
+    const rawGradient =
+      y < image.height - 1 ? averageEdgeDistance(rowAverageColor(image, y), rowAverageColor(image, y + 1)) : 0;
+    const gradient = Math.max(rowGradient[y] ?? 0, rawGradient);
+    const below = rowAverageColor(image, clamp(y + Math.floor(image.height * 0.012), 0, image.height - 1));
+    const bgDistance = nearestPaletteDistance(below, palette);
+    const score = gradient * 1.9 + Math.min(0.22, bgDistance / 255);
+    if (score > bestScore && (gradient > 0.045 || bgDistance > 18)) {
+      best = y;
+      bestScore = score;
+    }
+  }
+
+  if (best >= 0) return Math.max(best, searchStart);
+
+  const tolerance = clamp(Math.min(image.width, image.height) / 18, 20, 42);
+  let runStart = -1;
+  for (let y = searchStart; y <= searchEnd; y++) {
+    const color = rowAverageColor(image, y);
+    const active = !isNearPalette(color, palette, tolerance) || colorSpreadInRow(image, y) > 18;
+    if (active) {
+      if (runStart < 0) runStart = y;
+      if (y - runStart > image.height * 0.018) return Math.max(runStart, searchStart);
+    } else {
+      runStart = -1;
+    }
+  }
+
+  return -1;
+}
+
+function findDetailMediaBottom(image: AnalysisImage, top: number, rowGradient: number[], left = 0, right = image.width - 1) {
+  const searchStart = clamp(top + Math.floor(image.height * 0.45), 0, image.height - 1);
+  const searchEnd = Math.floor(image.height * 0.8);
+  let best = -1;
+  let bestScore = -1;
+
+  for (let y = searchStart; y <= searchEnd; y++) {
+    const rawGradient =
+      y < image.height - 1
+        ? averageEdgeDistance(rowAverageColor(image, y, left, right), rowAverageColor(image, y + 1, left, right))
+        : 0;
+    const gradient = Math.max(rowGradient[y] ?? 0, rawGradient);
+    const belowSpread = averageRowSpread(image, y + 1, Math.min(searchEnd, y + Math.floor(image.height * 0.014)), left, right);
+    if (gradient > 0.035 && belowSpread < 32) return y;
+
+    const belowLooksLikePage = belowSpread < 32 ? 0.18 : 0;
+    const score = gradient * 1.8 + belowLooksLikePage;
+    if (gradient > 0.055 && score > bestScore) {
+      best = y;
+      bestScore = score;
+    }
+  }
+
+  if (best >= 0) return best;
+
+  const fallback = strongestGradientBetween(rowGradient, searchStart, searchEnd);
+  return fallback.value > 0.035 ? fallback.index : -1;
+}
+
+function redRatioInRow(image: AnalysisImage, y: number, left: number, right: number) {
+  const safeLeft = clamp(left, 0, image.width - 1);
+  const safeRight = clamp(right, safeLeft, image.width - 1);
+  const step = Math.max(1, Math.floor((safeRight - safeLeft + 1) / 180));
+  let red = 0;
+  let count = 0;
+
+  for (let x = safeLeft; x <= safeRight; x += step) {
+    const [r, g, b] = pixelAt(image, x, y);
+    if (r > 165 && g < 95 && b < 135 && r - g > 55 && r - b > 35) red++;
+    count++;
+  }
+
+  return count > 0 ? red / count : 0;
+}
+
+function findXhsCarouselDotY(image: AnalysisImage, top: number, left: number, right: number) {
+  const mediaCenter = (left + right) / 2;
+  const dotBandHalf = Math.max(24, Math.floor(image.width * 0.18));
+  const bandLeft = clamp(Math.floor(mediaCenter - dotBandHalf), 0, image.width - 1);
+  const bandRight = clamp(Math.ceil(mediaCenter + dotBandHalf), bandLeft, image.width - 1);
+  const searchStart = clamp(top + Math.floor(image.height * 0.52), 0, image.height - 1);
+  const searchEnd = Math.floor(image.height * 0.84);
+  const minRedRatio = 0.012;
+  let bestY = -1;
+  let bestScore = 0;
+
+  for (let y = searchStart; y <= searchEnd; y++) {
+    const redRatio = redRatioInRow(image, y, bandLeft, bandRight);
+    if (redRatio < minRedRatio) continue;
+
+    const rowDark = darkRatioInRow(image, y, bandLeft, bandRight, 50);
+    const rowSpread = colorSpreadInRow(image, y, bandLeft, bandRight);
+    if (rowSpread > 36) continue;
+    const below = rowAverageColor(image, clamp(y + Math.floor(image.height * 0.018), 0, image.height - 1), bandLeft, bandRight);
+    const score = redRatio * 4 + rowSpread / 255 + (luminance(below) > 70 ? 0.08 : 0) - rowDark * 0.08;
+    if (score > bestScore) {
+      bestY = y;
+      bestScore = score;
+    }
+  }
+
+  return bestScore > 0.11 ? bestY : -1;
+}
+
+function extendDarkEmbeddedMediaBottom(image: AnalysisImage, top: number, bottom: number, left: number, right: number) {
+  if (right - left + 1 > image.width * 0.86) return bottom;
+  if (bottom <= top) return bottom;
+
+  const currentDark = darkRatioInRow(image, bottom, left, right, 58);
+  const currentLuma = luminance(rowAverageColor(image, bottom, left, right));
+  if (currentDark < 0.45 && currentLuma > 105) return bottom;
+
+  const searchEnd = Math.floor(image.height * 0.82);
+  let lastMediaRow = bottom;
+
+  for (let y = bottom + 1; y <= searchEnd; y++) {
+    const avg = rowAverageColor(image, y, left, right);
+    const luma = luminance(avg);
+    const white = luma > 215 && colorSpreadInRow(image, y, left, right) < 24;
+    const dark = darkRatioInRow(image, y, left, right, 58);
+
+    if (white && y - lastMediaRow > image.height * 0.008) return lastMediaRow;
+    if (dark > 0.38 || luma < 130 || colorSpreadInRow(image, y, left, right) > 24) lastMediaRow = y;
+  }
+
+  return lastMediaRow;
+}
+
+function rowPageFillStats(image: AnalysisImage, y: number, left: number, right: number) {
+  const safeLeft = clamp(left, 0, image.width - 1);
+  const safeRight = clamp(right, safeLeft, image.width - 1);
+  const step = Math.max(1, Math.floor((safeRight - safeLeft + 1) / 180));
+  let white = 0;
+  let dark = 0;
+  let count = 0;
+  let luma = 0;
+
+  for (let x = safeLeft; x <= safeRight; x += step) {
+    const color = pixelAt(image, x, y);
+    const value = luminance(color);
+    if (value > 225) white++;
+    if (value < 55) dark++;
+    luma += value;
+    count++;
+  }
+
+  return {
+    whiteRatio: count > 0 ? white / count : 0,
+    darkRatio: count > 0 ? dark / count : 0,
+    luma: count > 0 ? luma / count : 0,
+    spread: colorSpreadInRow(image, y, safeLeft, safeRight)
+  };
+}
+
+function findWideDetailTextBoundary(image: AnalysisImage, top: number, bottom: number, left: number, right: number) {
+  if (right - left + 1 < image.width * 0.9) return -1;
+
+  const searchStart = clamp(top + Math.floor(image.height * 0.22), top + 1, image.height - 1);
+  const searchEnd = clamp(Math.min(bottom, Math.floor(image.height * 0.72)), searchStart, image.height - 1);
+  const run = Math.max(4, Math.floor(image.height * 0.01));
+
+  const pageLike = (stats: ReturnType<typeof rowPageFillStats>) =>
+    (stats.whiteRatio > 0.62 && stats.luma > 178) || (stats.darkRatio > 0.62 && stats.luma < 84);
+  const mediaLike = (stats: ReturnType<typeof rowPageFillStats>) =>
+    stats.whiteRatio < 0.35 && stats.darkRatio < 0.5 && stats.spread > 20;
+
+  for (let y = searchStart; y <= searchEnd - run; y++) {
+    let pageRows = 0;
+    let pageLuma = 0;
+    for (let offset = 0; offset < run; offset++) {
+      const stats = rowPageFillStats(image, y + offset, left, right);
+      if (pageLike(stats)) pageRows++;
+      pageLuma += stats.luma;
+    }
+
+    if (pageRows < run * 0.72) continue;
+    const avgPageLuma = pageLuma / run;
+
+    let mediaRows = 0;
+    let mediaLuma = 0;
+    const beforeStart = Math.max(top, y - run * 2);
+    for (let py = beforeStart; py < y; py++) {
+      const stats = rowPageFillStats(image, py, left, right);
+      if (mediaLike(stats)) mediaRows++;
+      mediaLuma += stats.luma;
+    }
+
+    const beforeCount = Math.max(1, y - beforeStart);
+    const lumaJump = Math.abs(avgPageLuma - mediaLuma / beforeCount);
+    const enoughJump = avgPageLuma < 90 ? lumaJump > 26 : lumaJump > 55;
+    if (mediaRows >= beforeCount * 0.45 && enoughJump) {
+      return clamp(y - 1, top + 1, bottom);
+    }
+  }
+
+  return -1;
+}
+
+function detectMediaColumns(image: AnalysisImage, top: number, bottom: number, palette: Rgb[]) {
+  const tolerance = clamp(Math.min(image.width, image.height) / 18, 20, 42);
+  const values = new Array<number>(image.width).fill(0);
+  const sampleBottom = clamp(top + Math.floor((bottom - top + 1) * 0.62), top, bottom);
+  const yStep = Math.max(1, Math.floor((sampleBottom - top + 1) / 150));
+
+  for (let x = 0; x < image.width; x++) {
+    let active = 0;
+    let count = 0;
+    for (let y = top; y <= sampleBottom; y += yStep) {
+      const color = pixelAt(image, x, y);
+      const spread = Math.max(...color) - Math.min(...color);
+      if (!isNearPalette(color, palette, tolerance) || spread > 18) {
+        active++;
+      }
+      count++;
+    }
+    values[x] = active / Math.max(1, count);
+  }
+
+  const smoothed = smooth(values, Math.max(2, Math.floor(image.width * 0.006)));
+  const segments = findSegments(smoothed, 0.16, Math.floor(image.width * 0.28), 0, image.width - 1).sort((a, b) => {
+    const widthA = a.end - a.start + 1;
+    const widthB = b.end - b.start + 1;
+    return b.score * widthB - a.score * widthA;
+  });
+
+  const best = segments[0];
+  if (!best) return { left: 0, right: image.width - 1 };
+
+  const width = best.end - best.start + 1;
+  if (
+    width < image.width * 0.45 ||
+    width > image.width * 0.86 ||
+    best.start < image.width * 0.04 ||
+    image.width - 1 - best.end < image.width * 0.04
+  ) {
+    return { left: 0, right: image.width - 1 };
+  }
+
+  return {
+    left: clamp(best.start, 0, image.width - 2),
+    right: clamp(best.end, best.start + 1, image.width - 1)
+  };
+}
+
+function detectXhsDetailMediaBox(
+  image: AnalysisImage,
+  palette: Rgb[],
+  rowGradient: number[]
+): DetectionResult | null {
+  const top = findDetailMediaTop(image, rowGradient, palette);
+  if (top < 0) return null;
+
+  const roughBottom = findDetailMediaBottom(image, top, rowGradient);
+  if (roughBottom <= top || roughBottom - top + 1 < image.height * 0.18) return null;
+
+  const columns = detectMediaColumns(image, top, roughBottom, palette);
+  let bottom = findDetailMediaBottom(image, top, rowGradient, columns.left, columns.right);
+  if (bottom <= top || bottom - top + 1 < image.height * 0.18) return null;
+
+  const carouselDotY = findXhsCarouselDotY(image, top, columns.left, columns.right);
+  const hasCarouselAnchor = carouselDotY > 0;
+  if (carouselDotY > bottom + image.height * 0.025) {
+    bottom = clamp(carouselDotY - Math.floor(image.height * 0.018), top + 1, image.height - 1);
+  }
+  if (!hasCarouselAnchor) {
+    bottom = extendDarkEmbeddedMediaBottom(image, top, bottom, columns.left, columns.right);
+  }
+  const textBoundary = findWideDetailTextBoundary(image, top, bottom, columns.left, columns.right);
+  if (textBoundary > top && bottom - textBoundary > image.height * 0.025) {
+    bottom = textBoundary;
+  }
+
+  let refinedTop = top;
+  if (columns.left === 0 && columns.right === image.width - 1) {
+    for (
+      let i = 0;
+      i < Math.max(1, Math.floor(image.height * 0.006)) &&
+      refinedTop < bottom - 2 &&
+      darkRatioInRow(image, refinedTop, columns.left, columns.right, 45) > 0.65;
+      i++
+    ) {
+      refinedTop++;
+    }
+  }
+
+  const box = {
+    left: columns.left,
+    top: refinedTop,
+    width: columns.right - columns.left + 1,
+    height: bottom - refinedTop + 1
+  };
+  const refinedBox = trimOuterPageEdges(image, box, palette);
+
+  const areaRatio = (refinedBox.width * refinedBox.height) / (image.width * image.height);
+  const centerPenalty = Math.abs(refinedBox.left + refinedBox.width / 2 - image.width / 2) / image.width;
+  const metrics = candidateMetrics(image, refinedBox, palette);
+  const topEdge = rowGradient[refinedBox.top] ?? 0;
+  const bottomEdge = rowGradient[refinedBox.top + refinedBox.height - 1] ?? 0;
+  const score =
+    areaRatio * 0.22 +
+    metrics.edgeScore * 0.35 +
+    Math.min(0.28, (topEdge + bottomEdge) * 1.8) +
+    metrics.contentDensity * 0.22 -
+    centerPenalty * 0.28;
+
+  const minScore = hasCarouselAnchor ? 0.28 : 0.36;
+  if (refinedBox.width < image.width * 0.28 || score < minScore || centerPenalty > 0.28) return null;
+
+  return candidateToResult(
+    {
+      detector: "xhs-detail-media",
+      box: refinedBox,
+      score,
+      confidence: clamp(0.68 + score * 0.32 + (hasCarouselAnchor ? 0.03 : 0), 0.55, 0.96),
+      metrics
+    },
+    image,
+    palette,
+    refinedBox
+  );
 }
 
 function mapBoxToOriginal(box: CropBox, image: AnalysisImage): CropBox {
@@ -821,6 +1417,214 @@ function detectWideFrame(image: AnalysisImage, rowGradient: number[], palette: R
   return candidates;
 }
 
+function candidateToResult(
+  candidate: Candidate,
+  image: AnalysisImage,
+  palette: Rgb[],
+  refinedBox = candidate.box,
+  fallback = false
+): DetectionResult {
+  const cropBox = mapBoxToOriginalTight(refinedBox, image);
+  const metrics = candidate.metrics ?? candidateMetrics(image, refinedBox, palette);
+
+  return {
+    box: cropBox,
+    confidence: candidate.confidence,
+    detector: candidate.detector,
+    fallback,
+    background: palette,
+    candidates: [
+      {
+        detector: candidate.detector,
+        score: Number(candidate.score.toFixed(3)),
+        confidence: Number(candidate.confidence.toFixed(2)),
+        backgroundRatio: Number(metrics.backgroundRatio.toFixed(3)),
+        edgeScore: Number(metrics.edgeScore.toFixed(3)),
+        contentDensity: Number(metrics.contentDensity.toFixed(3)),
+        cropBox
+      }
+    ]
+  };
+}
+
+function detectXhsDetailPage(
+  image: AnalysisImage,
+  palette: Rgb[],
+  rowDiff: number[],
+  colDiff: number[],
+  rowGradient: number[],
+  colGradient: number[]
+): DetectionResult | null {
+  const topLimit = Math.floor(image.height * 0.06);
+  const bottomLimit = Math.floor(image.height * 0.78);
+  const minHeight = Math.floor(image.height * 0.2);
+  const maxHeight = Math.floor(image.height * 0.68);
+  const minWidth = Math.floor(image.width * 0.48);
+  const edgeX = Math.floor(image.width * 0.04);
+  const rowSignal = rowDiff.map((diff, index) => Math.max(diff, (rowGradient[index] ?? 0) * 3.8));
+  const colSignal = colDiff.map((diff, index) => Math.max(diff, (colGradient[index] ?? 0) * 2.6));
+  const rowSegments = findSegments(rowSignal, 0.13, minHeight, topLimit, bottomLimit);
+  const colSegments = findSegments(colSignal, 0.075, minWidth, edgeX, image.width - edgeX - 1);
+  const candidates: Candidate[] = [];
+
+  for (const row of rowSegments) {
+    const top = findBoundaryBefore(rowGradient, row.start, topLimit, Math.floor(image.height * 0.045));
+    const bottom = findBoundaryAfter(rowGradient, row.end, row.start + minHeight, Math.floor(image.height * 0.045));
+    const height = bottom - top + 1;
+    if (height < minHeight || height > maxHeight) continue;
+
+    const usableCols = colSegments.length
+      ? colSegments
+      : [{ start: edgeX, end: image.width - edgeX - 1, score: image.width - edgeX * 2 }];
+
+    for (const col of usableCols) {
+      const width = col.end - col.start + 1;
+      if (width < minWidth) continue;
+
+      const fillsMostWidth = width > image.width * 0.84;
+      const left = fillsMostWidth ? 0 : findBoundaryBefore(colGradient, col.start, 0, Math.floor(image.width * 0.045));
+      const right = fillsMostWidth
+        ? image.width - 1
+        : findBoundaryAfter(colGradient, col.end, col.start + minWidth, Math.floor(image.width * 0.045));
+      const box = {
+        left: clamp(left, 0, image.width - 2),
+        top: clamp(top, 0, image.height - 2),
+        width: clamp(right - left + 1, 1, image.width),
+        height: clamp(height, 1, image.height)
+      };
+
+      const areaRatio = (box.width * box.height) / (image.width * image.height);
+      const centerPenalty = Math.abs(box.left + box.width / 2 - image.width / 2) / image.width;
+      const topRatio = box.top / image.height;
+      const bottomRatio = (box.top + box.height) / image.height;
+      const metrics = candidateMetrics(image, box, palette);
+      const topEdge = rowGradient[box.top] ?? 0;
+      const bottomEdge = rowGradient[box.top + box.height - 1] ?? 0;
+      const structuralScore =
+        metrics.contentDensity * 0.44 +
+        metrics.edgeScore * 0.55 +
+        Math.min(0.18, (topEdge + bottomEdge) * 1.7) +
+        areaRatio * 0.18 -
+        centerPenalty * 0.38 -
+        (topRatio < 0.04 ? 0.22 : 0) -
+        (bottomRatio > 0.86 ? 0.3 : 0);
+
+      if (metrics.contentDensity < 0.34 || centerPenalty > 0.18 || structuralScore < 0.34) continue;
+
+      candidates.push({
+        detector: "xhs-detail-container",
+        box,
+        score: structuralScore,
+        confidence: clamp(0.58 + structuralScore * 0.38, 0.45, 0.94),
+        metrics
+      });
+    }
+  }
+
+  const best = candidates.sort((a, b) => b.score - a.score)[0];
+  if (!best || best.confidence < 0.71) return null;
+
+  const fullWidthEdges = refineFullWidthDetailEdges(image, best.box, rowGradient);
+  const withoutTextTail =
+    fullWidthEdges.box.width > image.width * 0.9 ? trimDetailTextTail(image, fullWidthEdges.box, palette) : fullWidthEdges;
+  const trimmed = trimSolidEdges(image, withoutTextTail.box);
+  const finalCandidate = {
+    ...best,
+    detector: trimmed.trimmed || withoutTextTail.trimmed || fullWidthEdges.trimmed ? "xhs-detail-inner-trim" : best.detector,
+    box: trimmed.box,
+    confidence: clamp(best.confidence + (trimmed.trimmed ? 0.02 : 0), 0.45, 0.96),
+    metrics: candidateMetrics(image, trimmed.box, palette)
+  };
+
+  return candidateToResult(finalCandidate, image, palette, trimmed.box);
+}
+
+function detectXhsPreviewPage(image: AnalysisImage, palette: Rgb[]): DetectionResult | null {
+  const sideBand = Math.max(8, Math.floor(image.width * 0.05));
+  const topBand = Math.max(12, Math.floor(image.height * 0.1));
+  const bottomBand = Math.max(12, Math.floor(image.height * 0.08));
+  const topDark = averageDarkRatioInRows(image, 0, topBand);
+  const bottomDark = averageDarkRatioInRows(image, image.height - 1 - bottomBand, image.height - 1);
+  const sideDark =
+    (averageDarkRatioInCols(image, 0, sideBand) +
+      averageDarkRatioInCols(image, image.width - 1 - sideBand, image.width - 1)) /
+    2;
+  const previewDark = topDark * 0.5 + bottomDark * 0.35 + sideDark * 0.15;
+
+  if (previewDark < 0.68 || topDark < 0.62 || bottomDark < 0.62 || sideDark < 0.42) return null;
+
+  const contentThreshold = 0.58;
+  const stableRows = Math.max(2, Math.floor(image.height * 0.006));
+  const rowHasContent = (y: number) => {
+    let hits = 0;
+    let count = 0;
+    for (let offset = 0; offset < stableRows; offset++) {
+      const value = darkRatioInRow(image, y + offset, sideBand, image.width - 1 - sideBand, 38);
+      if (value < contentThreshold) hits++;
+      count++;
+    }
+    return hits / Math.max(1, count) >= 0.65;
+  };
+
+  let top = -1;
+  for (let y = topBand; y < image.height - bottomBand; y++) {
+    if (rowHasContent(y)) {
+      top = y;
+      break;
+    }
+  }
+
+  let bottom = -1;
+  for (let y = image.height - 1 - bottomBand; y > topBand; y--) {
+    if (darkRatioInRow(image, y, sideBand, image.width - 1 - sideBand, 38) < contentThreshold) {
+      bottom = y;
+      break;
+    }
+  }
+
+  if (top < 0 || bottom <= top || bottom - top + 1 < image.height * 0.18) return null;
+
+  let left = 0;
+  let right = image.width - 1;
+  for (let x = 0; x < image.width; x++) {
+    if (darkRatioInCol(image, x, top, bottom, 38) < 0.58) {
+      left = x;
+      break;
+    }
+  }
+
+  for (let x = image.width - 1; x >= left; x--) {
+    if (darkRatioInCol(image, x, top, bottom, 38) < 0.58) {
+      right = x;
+      break;
+    }
+  }
+
+  const box = { left, top, width: right - left + 1, height: bottom - top + 1 };
+  if (box.width < image.width * 0.28 || box.height < image.height * 0.18) return null;
+
+  const refined = refineBlackEdges(image, box);
+  const sideTrimmed = refined.left > image.width * 0.025 || refined.left + refined.width < image.width * 0.975;
+  const topTrimmed = refined.top > image.height * 0.08;
+  const metrics = candidateMetrics(image, refined, palette);
+  const score = previewDark * 0.48 + metrics.contentDensity * 0.22 + (topTrimmed ? 0.2 : 0) + (sideTrimmed ? 0.1 : 0);
+
+  if (score < 0.56) return null;
+
+  return candidateToResult(
+    {
+      detector: "xhs-preview",
+      box: refined,
+      score,
+      confidence: clamp(0.6 + score * 0.34, 0.45, 0.96),
+      metrics
+    },
+    image,
+    palette,
+    refined
+  );
+}
+
 function normalizeCandidate(candidate: Candidate, image: AnalysisImage): Candidate {
   const insetX = candidate.detector === "black-matte" || candidate.box.width > image.width * 0.94 ? 0 : Math.round(candidate.box.width * 0.004);
   const insetY = candidate.detector === "black-matte" ? 0 : Math.round(candidate.box.height * 0.004);
@@ -835,7 +1639,7 @@ function normalizeCandidate(candidate: Candidate, image: AnalysisImage): Candida
   };
 }
 
-function detectCropBox(image: AnalysisImage) {
+function detectGenericCropBox(image: AnalysisImage, palette: Rgb[], signals: ReturnType<typeof buildSignals>): DetectionResult {
   const fastBlackMatte = detectFastBlackMatte(image);
   if (fastBlackMatte) {
     const refined = refineBlackEdges(image, fastBlackMatte.box);
@@ -857,8 +1661,6 @@ function detectCropBox(image: AnalysisImage) {
     };
   }
 
-  const palette = estimateBackgroundPalette(image);
-  const signals = buildSignals(image, palette);
   const fallback = scoreBox(image, fallbackBox(image.width, image.height), "fallback", -0.15);
   fallback.score = -0.5;
   fallback.confidence = 0.35;
@@ -901,6 +1703,56 @@ function detectCropBox(image: AnalysisImage) {
   };
 }
 
+function detectFastBlackMatteCropBox(image: AnalysisImage): DetectionResult | null {
+  const fastBlackMatte = detectFastBlackMatte(image);
+  if (!fastBlackMatte) return null;
+  if (fastBlackMatte.box.top < image.height * 0.17) return null;
+
+  const refined = refineBlackEdges(image, fastBlackMatte.box);
+  const cropBox = mapBoxToOriginalTight(refined, image);
+  return {
+    box: cropBox,
+    confidence: 0.96,
+    detector: fastBlackMatte.detector,
+    fallback: false,
+    background: [],
+    candidates: [
+      {
+        detector: fastBlackMatte.detector,
+        score: Number(fastBlackMatte.score.toFixed(3)),
+        confidence: 0.96,
+        cropBox
+      }
+    ]
+  };
+}
+
+function detectCropBox(image: AnalysisImage): DetectionResult {
+  const palette = estimateBackgroundPalette(image);
+  const signals = buildSignals(image, palette);
+
+  const fastBlackMatte = detectFastBlackMatteCropBox(image);
+  if (fastBlackMatte) return fastBlackMatte;
+
+  const detailMedia = detectXhsDetailMediaBox(image, palette, signals.rowGradient);
+  if (detailMedia) return detailMedia;
+
+  const detail = detectXhsDetailPage(
+    image,
+    palette,
+    signals.rowDiff,
+    signals.colDiff,
+    signals.rowGradient,
+    signals.colGradient
+  );
+  if (detail) return detail;
+
+  const preview = detectXhsPreviewPage(image, palette);
+  if (preview) return preview;
+
+  return detectGenericCropBox(image, palette, signals);
+}
+
 async function createAnalysisImage(image: sharp.Sharp): Promise<AnalysisImage> {
   const metadata = await image.metadata();
   const originalWidth = metadata.width ?? 0;
@@ -933,15 +1785,92 @@ async function createAnalysisImage(image: sharp.Sharp): Promise<AnalysisImage> {
   };
 }
 
+async function refineOriginalHairlineEdges(image: sharp.Sharp, box: CropBox): Promise<CropBox> {
+  const raw = await image
+    .clone()
+    .extract(box)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { data, info } = raw;
+  const channels = info.channels;
+  const maxTrimX = Math.min(4, Math.floor(info.width * 0.01));
+  const maxTrimY = Math.min(4, Math.floor(info.height * 0.01));
+  let leftTrim = 0;
+  let rightTrim = 0;
+  let topTrim = 0;
+  let bottomTrim = 0;
+
+  const pixel = (x: number, y: number): Rgb => {
+    const index = (y * info.width + x) * channels;
+    return [data[index] ?? 0, data[index + 1] ?? 0, data[index + 2] ?? 0];
+  };
+
+  const lineStats = (axis: "x" | "y", value: number) => {
+    const limit = axis === "x" ? info.height : info.width;
+    const step = Math.max(1, Math.floor(limit / 220));
+    const colors: Rgb[] = [];
+    let avg: Rgb = [0, 0, 0];
+
+    for (let i = 0; i < limit; i += step) {
+      const color = axis === "x" ? pixel(value, i) : pixel(i, value);
+      colors.push(color);
+      avg = [avg[0] + color[0], avg[1] + color[1], avg[2] + color[2]];
+    }
+
+    avg = [avg[0] / colors.length, avg[1] / colors.length, avg[2] / colors.length];
+    const spread = colors.reduce((sum, color) => sum + rgbDistance(color, avg), 0) / Math.max(1, colors.length);
+    return { avg, spread, luma: luminance(avg) };
+  };
+
+  const isHairline = (axis: "x" | "y", value: number, direction: 1 | -1) => {
+    const edge = lineStats(axis, value);
+    const probeLimit = axis === "x" ? info.width - 1 : info.height - 1;
+    const probe = lineStats(axis, clamp(value + direction * 3, 0, probeLimit));
+    const pageLike = edge.spread < 10 && (edge.luma > 245 || edge.luma < 14);
+    return pageLike && (rgbDistance(edge.avg, probe.avg) > 28 || probe.spread > 18);
+  };
+
+  while (leftTrim < maxTrimX && info.width - leftTrim - rightTrim > 8 && isHairline("x", leftTrim, 1)) leftTrim++;
+  while (
+    rightTrim < maxTrimX &&
+    info.width - leftTrim - rightTrim > 8 &&
+    isHairline("x", info.width - 1 - rightTrim, -1)
+  ) {
+    rightTrim++;
+  }
+  while (topTrim < maxTrimY && info.height - topTrim - bottomTrim > 8 && isHairline("y", topTrim, 1)) topTrim++;
+  while (
+    bottomTrim < maxTrimY &&
+    info.height - topTrim - bottomTrim > 8 &&
+    isHairline("y", info.height - 1 - bottomTrim, -1)
+  ) {
+    bottomTrim++;
+  }
+
+  if (!leftTrim && !rightTrim && !topTrim && !bottomTrim) return box;
+
+  return {
+    left: box.left + leftTrim,
+    top: box.top + topTrim,
+    width: box.width - leftTrim - rightTrim,
+    height: box.height - topTrim - bottomTrim
+  };
+}
+
 export async function cropXhsScreenshot(input: Buffer, filename: string): Promise<CropResult> {
   const image = sharp(input, { failOn: "none" }).rotate();
   const analysis = await createAnalysisImage(image).catch((error) => {
     throw new Error(error instanceof Error ? `${filename} ${error.message}` : `${filename} 无法识别`);
   });
   const detected = detectCropBox(analysis);
+  const cropBox =
+    detected.detector === "xhs-detail-media" || detected.detector === "xhs-detail-inner-trim"
+      ? await refineOriginalHairlineEdges(image, detected.box)
+      : detected.box;
   const extracted = await image
     .clone()
-    .extract(detected.box)
+    .extract(cropBox)
     .jpeg({ quality: 94, mozjpeg: true })
     .toBuffer({ resolveWithObject: true });
 
@@ -952,7 +1881,7 @@ export async function cropXhsScreenshot(input: Buffer, filename: string): Promis
     width: extracted.info.width,
     height: extracted.info.height,
     dataUrl: `data:image/jpeg;base64,${extracted.data.toString("base64")}`,
-    cropBox: detected.box,
+    cropBox,
     confidence: Number(detected.confidence.toFixed(2)),
     debug: {
       fallback: detected.fallback,
