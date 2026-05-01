@@ -1,6 +1,7 @@
 export type StoredResult = {
   id: string;
   sourceKey?: string;
+  cacheVersion?: number;
   filename: string;
   mime: string;
   width: number;
@@ -20,6 +21,11 @@ export type StoredResult = {
 const DB_NAME = "pictureCut-tool";
 const STORE_NAME = "results";
 const DB_VERSION = 2;
+const CONTENT_SOURCE_KEY_PATTERN = /^\d+:[a-f0-9]{64}$/;
+
+function isContentSourceKey(sourceKey?: string): sourceKey is string {
+  return Boolean(sourceKey && CONTENT_SOURCE_KEY_PATTERN.test(sourceKey));
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -50,22 +56,25 @@ export async function addStoredResult(result: StoredResult) {
   return new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     const store = tx.objectStore(STORE_NAME);
+    const request = store.openCursor();
 
-    if (result.sourceKey && store.indexNames.contains("sourceKey")) {
-      const request = store.index("sourceKey").openCursor(IDBKeyRange.only(result.sourceKey));
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (cursor) {
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (cursor) {
+        const existing = cursor.value as StoredResult;
+        const sameSource = Boolean(result.sourceKey && existing.sourceKey === result.sourceKey);
+        const legacySameFile = !isContentSourceKey(existing.sourceKey) && existing.filename === result.filename;
+
+        if (sameSource || legacySameFile) {
           cursor.delete();
-          cursor.continue();
-        } else {
-          store.put(result);
         }
-      };
-      request.onerror = () => reject(request.error);
-    } else {
-      store.put(result);
-    }
+
+        cursor.continue();
+      } else {
+        store.put(result);
+      }
+    };
+    request.onerror = () => reject(request.error);
 
     tx.oncomplete = () => {
       db.close();
@@ -103,6 +112,22 @@ export async function deleteStoredResult(id: string) {
   return new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     tx.objectStore(STORE_NAME).delete(id);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+export async function clearStoredResults() {
+  const db = await openDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).clear();
     tx.oncomplete = () => {
       db.close();
       resolve();

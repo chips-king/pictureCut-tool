@@ -103,24 +103,25 @@ function pixelAt(image: AnalysisImage, x: number, y: number): Rgb {
   return [image.data[index] ?? 0, image.data[index + 1] ?? 0, image.data[index + 2] ?? 0];
 }
 
+function pixelAtUnsafe(data: Buffer, width: number, channels: number, x: number, y: number): Rgb {
+  const index = (y * width + x) * channels;
+  return [data[index], data[index + 1], data[index + 2]];
+}
+
 function median(values: number[]) {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
 function smooth(values: number[], radius: number) {
-  const output = new Array<number>(values.length);
-  for (let i = 0; i < values.length; i++) {
-    let sum = 0;
-    let count = 0;
-    for (let offset = -radius; offset <= radius; offset++) {
-      const index = i + offset;
-      if (index >= 0 && index < values.length) {
-        sum += values[index];
-        count++;
-      }
-    }
-    output[i] = sum / count;
+  const n = values.length;
+  const prefix = new Array<number>(n + 1).fill(0);
+  for (let i = 0; i < n; i++) prefix[i + 1] = prefix[i] + values[i];
+  const output = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    const lo = Math.max(0, i - radius);
+    const hi = Math.min(n - 1, i + radius);
+    output[i] = (prefix[hi + 1] - prefix[lo]) / (hi - lo + 1);
   }
   return output;
 }
@@ -259,13 +260,14 @@ function buildSignals(image: AnalysisImage, palette: Rgb[]) {
   const rowGradient = new Array<number>(image.height).fill(0);
   const colGradient = new Array<number>(image.width).fill(0);
   const step = Math.max(1, Math.floor(Math.min(image.width, image.height) / 650));
+  const { data, width, channels } = image;
 
   for (let y = 0; y < image.height; y += step) {
     let diffCount = 0;
     let darkCount = 0;
     let rowSamples = 0;
     for (let x = 0; x < image.width; x += step) {
-      const color = pixelAt(image, x, y);
+      const color = pixelAtUnsafe(data, width, channels, x, y);
       if (!isNearPalette(color, palette, tolerance)) diffCount++;
       if (luminance(color) < 26) darkCount++;
       rowSamples++;
@@ -426,7 +428,7 @@ function detectFastBlackMatte(image: AnalysisImage) {
 
   let left = 0;
   let right = image.width - 1;
-  const minSideBand = Math.floor(image.width * 0.06);
+  const minSideBand = 1;
   const colContentThreshold = 0.58;
 
   if (darkRatioInCol(image, 0, top, bottom) >= matteThreshold) {
@@ -463,9 +465,9 @@ function refineBlackEdges(image: AnalysisImage, box: CropBox): CropBox {
   let top = clamp(box.top, 0, image.height - 2);
   let right = clamp(box.left + box.width - 1, left + 1, image.width - 1);
   let bottom = clamp(box.top + box.height - 1, top + 1, image.height - 1);
-  const maxTrimX = Math.max(1, Math.floor((right - left + 1) * 0.025));
+  const maxTrimX = Math.max(1, Math.floor((right - left + 1) * 0.12));
   const maxTrimY = Math.max(1, Math.floor((bottom - top + 1) * 0.025));
-  const edgeThreshold = 0.68;
+  const edgeThreshold = 0.58;
 
   for (let i = 0; i < maxTrimY && bottom - top > 2 && darkRatioInRow(image, top, left, right) >= edgeThreshold; i++) {
     top++;
@@ -1794,8 +1796,8 @@ async function refineOriginalHairlineEdges(image: sharp.Sharp, box: CropBox): Pr
     .toBuffer({ resolveWithObject: true });
   const { data, info } = raw;
   const channels = info.channels;
-  const maxTrimX = Math.min(4, Math.floor(info.width * 0.01));
-  const maxTrimY = Math.min(4, Math.floor(info.height * 0.01));
+  const maxTrimX = Math.max(4, Math.min(32, Math.floor(info.width * 0.02)));
+  const maxTrimY = Math.max(4, Math.min(24, Math.floor(info.height * 0.01)));
   let leftTrim = 0;
   let rightTrim = 0;
   let topTrim = 0;
@@ -1811,24 +1813,39 @@ async function refineOriginalHairlineEdges(image: sharp.Sharp, box: CropBox): Pr
     const step = Math.max(1, Math.floor(limit / 220));
     const colors: Rgb[] = [];
     let avg: Rgb = [0, 0, 0];
+    let dark = 0;
+    let bright = 0;
 
     for (let i = 0; i < limit; i += step) {
       const color = axis === "x" ? pixel(value, i) : pixel(i, value);
+      const luma = luminance(color);
       colors.push(color);
       avg = [avg[0] + color[0], avg[1] + color[1], avg[2] + color[2]];
+      if (luma < 48) dark++;
+      if (luma > 242) bright++;
     }
 
     avg = [avg[0] / colors.length, avg[1] / colors.length, avg[2] / colors.length];
     const spread = colors.reduce((sum, color) => sum + rgbDistance(color, avg), 0) / Math.max(1, colors.length);
-    return { avg, spread, luma: luminance(avg) };
+    return {
+      avg,
+      spread,
+      luma: luminance(avg),
+      darkRatio: dark / Math.max(1, colors.length),
+      brightRatio: bright / Math.max(1, colors.length)
+    };
   };
 
   const isHairline = (axis: "x" | "y", value: number, direction: 1 | -1) => {
     const edge = lineStats(axis, value);
     const probeLimit = axis === "x" ? info.width - 1 : info.height - 1;
     const probe = lineStats(axis, clamp(value + direction * 3, 0, probeLimit));
-    const pageLike = edge.spread < 10 && (edge.luma > 245 || edge.luma < 14);
-    return pageLike && (rgbDistance(edge.avg, probe.avg) > 28 || probe.spread > 18);
+    const pageLike = edge.spread < 12 && (edge.brightRatio > 0.96 || edge.darkRatio > 0.96 || edge.luma > 245 || edge.luma < 44);
+    const photoBorderLike =
+      edge.luma < 118 &&
+      (probe.luma - edge.luma > 18 || rgbDistance(edge.avg, probe.avg) > 22) &&
+      edge.spread < Math.max(34, probe.spread + 10);
+    return (pageLike && (rgbDistance(edge.avg, probe.avg) > 28 || probe.spread > 18)) || photoBorderLike;
   };
 
   while (leftTrim < maxTrimX && info.width - leftTrim - rightTrim > 8 && isHairline("x", leftTrim, 1)) leftTrim++;
@@ -1864,10 +1881,7 @@ export async function cropXhsScreenshot(input: Buffer, filename: string): Promis
     throw new Error(error instanceof Error ? `${filename} ${error.message}` : `${filename} 无法识别`);
   });
   const detected = detectCropBox(analysis);
-  const cropBox =
-    detected.detector === "xhs-detail-media" || detected.detector === "xhs-detail-inner-trim"
-      ? await refineOriginalHairlineEdges(image, detected.box)
-      : detected.box;
+  const cropBox = detected.fallback ? detected.box : await refineOriginalHairlineEdges(image, detected.box);
   const extracted = await image
     .clone()
     .extract(cropBox)

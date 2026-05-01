@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addStoredResult,
   clearExpiredResults,
+  clearStoredResults,
   deleteStoredResult,
   getStoredResults,
   type StoredResult
@@ -33,22 +34,34 @@ type UploadStatus = {
 };
 
 const TEN_MINUTES = 10 * 60 * 1000;
+const RESULT_CACHE_VERSION = 3;
+const CONTENT_SOURCE_KEY_PATTERN = /^\d+:[a-f0-9]{64}$/;
 
-function createSourceKey(file: File) {
-  return `${file.name}:${file.size}:${file.lastModified}`;
+function isContentSourceKey(sourceKey?: string): sourceKey is string {
+  return Boolean(sourceKey && CONTENT_SOURCE_KEY_PATTERN.test(sourceKey));
+}
+
+async function createSourceKey(file: File) {
+  const buffer = await file.arrayBuffer();
+  const hash = await crypto.subtle.digest("SHA-256", buffer);
+  const hashText = Array.from(new Uint8Array(hash))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `${file.size}:${hashText}`;
 }
 
 function mergeUniqueResults(newItems: StoredResult[], currentItems: StoredResult[]) {
   const seenSourceKeys = new Set<string>();
   const seenIds = new Set<string>();
-  const newFilenames = new Set(newItems.map((item) => item.filename));
+  const validItems = [...newItems, ...currentItems].filter((item) => item.cacheVersion === RESULT_CACHE_VERSION);
+  const contentFilenames = new Set(validItems.filter((item) => isContentSourceKey(item.sourceKey)).map((item) => item.filename));
   const merged: StoredResult[] = [];
 
-  for (const item of [...newItems, ...currentItems]) {
-    if (item.sourceKey) {
+  for (const item of validItems) {
+    if (isContentSourceKey(item.sourceKey)) {
       if (seenSourceKeys.has(item.sourceKey)) continue;
       seenSourceKeys.add(item.sourceKey);
-    } else if (currentItems.includes(item) && newFilenames.has(item.filename)) {
+    } else if (contentFilenames.has(item.filename)) {
       continue;
     } else if (seenIds.has(item.id)) {
       continue;
@@ -63,9 +76,15 @@ function mergeUniqueResults(newItems: StoredResult[], currentItems: StoredResult
 
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const isProcessingRef = useRef(false);
+  const resultsRef = useRef<StoredResult[]>([]);
   const [results, setResults] = useState<StoredResult[]>([]);
   const [status, setStatus] = useState<UploadStatus>({ text: "暂无结果", kind: "idle" });
   const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    resultsRef.current = results;
+  }, [results]);
 
   useEffect(() => {
     void clearExpiredResults().then(loadStoredResults);
@@ -97,12 +116,17 @@ export default function Home() {
   const loadStoredResults = async () => {
     const stored = await getStoredResults();
     setResults(mergeUniqueResults(stored, []));
-    if (stored.length === 0) {
+    if (mergeUniqueResults(stored, []).length === 0) {
       setStatus((current) => (current.kind === "loading" ? current : { text: "暂无结果", kind: "idle" }));
     }
   };
 
   const processFiles = useCallback(async (files: FileList | File[]) => {
+    if (isProcessingRef.current) {
+      setStatus({ text: "正在处理，请稍等", kind: "loading" });
+      return;
+    }
+
     const imageFiles = Array.from(files).filter((file) => file.type.startsWith("image/"));
 
     if (imageFiles.length === 0) {
@@ -110,15 +134,35 @@ export default function Home() {
       return;
     }
 
+    isProcessingRef.current = true;
     setStatus({ text: "正在处理...", kind: "loading" });
 
-    const formData = new FormData();
-    const sourceKeys = imageFiles.map(createSourceKey);
-    for (const file of imageFiles) {
-      formData.append("images", file, file.name);
-    }
-
     try {
+      const keyedFiles = await Promise.all(
+        imageFiles.map(async (file) => ({
+          file,
+          sourceKey: await createSourceKey(file)
+        }))
+      );
+      const existingSourceKeys = new Set(resultsRef.current.map((item) => item.sourceKey).filter(isContentSourceKey));
+      const seenSourceKeys = new Set<string>();
+      const uploadItems = keyedFiles.filter((item) => {
+        if (seenSourceKeys.has(item.sourceKey) || existingSourceKeys.has(item.sourceKey)) return false;
+        seenSourceKeys.add(item.sourceKey);
+        return true;
+      });
+
+      if (uploadItems.length === 0) {
+        setStatus({ text: "图片已在结果中", kind: "success" });
+        return;
+      }
+
+      const formData = new FormData();
+      const sourceKeys = uploadItems.map((item) => item.sourceKey);
+      for (const { file } of uploadItems) {
+        formData.append("images", file, file.name);
+      }
+
       const response = await fetch("/api/process", {
         method: "POST",
         body: formData
@@ -133,6 +177,7 @@ export default function Home() {
       const processed: StoredResult[] = payload.results.map((item: ApiResult, index: number) => ({
         ...item,
         sourceKey: sourceKeys[index],
+        cacheVersion: RESULT_CACHE_VERSION,
         createdAt: now,
         expiresAt: now + TEN_MINUTES
       }));
@@ -146,6 +191,7 @@ export default function Home() {
     } catch (error) {
       setStatus({ text: error instanceof Error ? error.message : "处理失败", kind: "error" });
     } finally {
+      isProcessingRef.current = false;
       if (inputRef.current) {
         inputRef.current.value = "";
       }
@@ -157,15 +203,42 @@ export default function Home() {
     setResults((current) => current.filter((item) => item.id !== id));
   };
 
-  const saveImage = (item: StoredResult) => {
+  const clearAllCache = async () => {
+    await clearStoredResults();
+    setResults([]);
+    setStatus({ text: "缓存已清空", kind: "success" });
+
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key)));
+    }
+
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    }
+
+    localStorage.clear();
+    sessionStorage.clear();
+  };
+
+  const saveImage = async (item: StoredResult) => {
     const link = document.createElement("a");
     const extension = item.mime.includes("png") ? "png" : "jpg";
     const baseName = item.filename.replace(/\.[^.]+$/, "") || "image";
-    link.href = item.dataUrl;
-    link.download = `${baseName}-cut.${extension}`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    const response = await fetch(item.dataUrl);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+
+    try {
+      link.href = url;
+      link.download = `${baseName}-cut.${extension}`;
+      document.body.appendChild(link);
+      link.click();
+    } finally {
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   };
 
   const statusClass = useMemo(() => {
@@ -225,7 +298,18 @@ export default function Home() {
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-[var(--foreground)]">处理结果</h2>
-            <span className="text-sm text-[var(--muted)]">{results.length} 张</span>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className="text-sm font-medium text-[var(--muted)] active:text-[var(--foreground)]"
+                onClick={() => {
+                  void clearAllCache();
+                }}
+              >
+                清空缓存
+              </button>
+              <span className="text-sm text-[var(--muted)]">{results.length} 张</span>
+            </div>
           </div>
 
           {results.length === 0 ? (
@@ -250,7 +334,9 @@ export default function Home() {
                   <button
                     type="button"
                     className="min-h-11 rounded-2xl bg-[var(--primary)] px-4 text-sm font-medium text-[var(--primary-foreground)] active:bg-[var(--primary-active)]"
-                    onClick={() => saveImage(item)}
+                    onClick={() => {
+                      void saveImage(item);
+                    }}
                   >
                     保存图片
                   </button>

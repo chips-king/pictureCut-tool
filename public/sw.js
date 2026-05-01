@@ -1,4 +1,4 @@
-const CACHE_NAME = "picturecut-tool-v2";
+const CACHE_NAME = "picturecut-tool-v3";
 const APP_SHELL = ["/", "/manifest.json", "/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {
