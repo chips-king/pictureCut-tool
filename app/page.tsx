@@ -80,9 +80,16 @@ function mergeUniqueResults(newItems: StoredResult[], currentItems: StoredResult
 
 function TrashIcon({ className }: IconProps) {
   return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 32 32" fill="none">
-      <path d="M7.5 10h17M12.8 7h6.4M10.8 10l.8 14a3.1 3.1 0 0 0 3.1 2.9h2.6a3.1 3.1 0 0 0 3.1-2.9l.8-14" stroke="currentColor" strokeWidth="2.35" strokeLinecap="round" />
-      <path d="M14 14v8M18 14v8" stroke="currentColor" strokeWidth="2.35" strokeLinecap="round" />
+    <svg className={className} aria-hidden="true" viewBox="0 0 24 24" fill="none">
+      <path d="M8.25 7.25h7.5M10.1 4.75h3.8" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path
+        d="M7.65 7.25l.66 10.92a2.35 2.35 0 0 0 2.34 2.18h2.7a2.35 2.35 0 0 0 2.34-2.18l.66-10.92"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M10.45 10.55v6.2M13.55 10.55v6.2" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
     </svg>
   );
 }
@@ -94,6 +101,8 @@ export default function Home() {
   const [results, setResults] = useState<StoredResult[]>([]);
   const [status, setStatus] = useState<UploadStatus>({ text: "暂无结果", kind: "idle" });
   const [isDragging, setIsDragging] = useState(false);
+  const [showProgress, setShowProgress] = useState(false);
+  const [isProgressLeaving, setIsProgressLeaving] = useState(false);
 
   useEffect(() => {
     resultsRef.current = results;
@@ -153,6 +162,7 @@ export default function Home() {
     }
 
     isProcessingRef.current = true;
+    const processingStartedAt = performance.now();
     setStatus({ text: `正在处理 ${imageFiles.length} 张图片`, kind: "loading" });
 
     try {
@@ -204,6 +214,11 @@ export default function Home() {
         await addStoredResult(item);
       }
 
+      const elapsed = performance.now() - processingStartedAt;
+      if (elapsed < 1450) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1450 - elapsed));
+      }
+
       setResults((current) => mergeUniqueResults(processed, current));
       setStatus({ text: "处理完成", kind: "success" });
     } catch (error) {
@@ -228,6 +243,34 @@ export default function Home() {
     window.addEventListener("paste", handlePaste);
     return () => window.removeEventListener("paste", handlePaste);
   }, [processFiles]);
+
+  useEffect(() => {
+    if (status.kind === "idle" || status.kind === "loading") return undefined;
+
+    const timer = window.setTimeout(() => {
+      setStatus({ text: "暂无结果", kind: "idle" });
+    }, 2200);
+
+    return () => window.clearTimeout(timer);
+  }, [status.kind, status.text]);
+
+  useEffect(() => {
+    if (status.kind === "loading") {
+      setShowProgress(true);
+      setIsProgressLeaving(false);
+      return undefined;
+    }
+
+    if (!showProgress) return undefined;
+
+    setIsProgressLeaving(true);
+    const timer = window.setTimeout(() => {
+      setShowProgress(false);
+      setIsProgressLeaving(false);
+    }, 620);
+
+    return () => window.clearTimeout(timer);
+  }, [showProgress, status.kind]);
 
   const handleDelete = async (id: string) => {
     await deleteStoredResult(id);
@@ -280,13 +323,13 @@ export default function Home() {
   }, [status.kind]);
 
   const isProcessing = status.kind === "loading";
-  const hasUploadStatus = status.kind !== "idle";
+  const hasResultStatus = status.kind !== "idle";
 
   return (
     <main className="min-h-dvh overflow-hidden px-5 pb-[calc(112px+env(safe-area-inset-bottom))] pt-[calc(42px+env(safe-area-inset-top))] sm:px-6 lg:px-8 lg:pb-16 lg:pt-14">
       <div className="mx-auto flex w-full max-w-[42rem] flex-col gap-7 lg:gap-8">
-        <header className="pt-3 text-left sm:text-center lg:pt-0">
-          <h1 className="max-w-[15ch] text-[2rem] font-bold leading-[1.12] tracking-normal text-[var(--foreground)] sm:mx-auto sm:max-w-none sm:text-[2.6rem] lg:text-5xl">
+        <header className="pt-3 text-center lg:pt-0">
+          <h1 className="mx-auto max-w-[15ch] text-[2rem] font-bold leading-[1.12] tracking-normal text-[var(--foreground)] sm:max-w-none sm:text-[2.6rem] lg:text-5xl">
             小红书截图剥离图片工具
           </h1>
           <p className="mt-3 text-[1rem] leading-7 text-[var(--muted)]">
@@ -332,33 +375,35 @@ export default function Home() {
                 }
               }}
             />
-            {hasUploadStatus ? (
-              <div className="mt-4 flex min-h-8 items-center px-1">
-                <p className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${statusClass}`} aria-live="polite">
-                  {status.text}
-                </p>
-              </div>
-            ) : null}
-            {isProcessing ? (
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--surface)]">
-                <div className="h-full w-2/3 rounded-full bg-[var(--primary)] transition-all" />
+            {showProgress ? (
+              <div className={`processing-progress mt-4 overflow-hidden rounded-full bg-[var(--surface)] ${isProgressLeaving ? "processing-progress-leaving" : ""}`} aria-hidden="true">
+                <div className="processing-progress-bar h-full rounded-full" />
               </div>
             ) : null}
           </section>
 
           <section className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
               <h2 className="text-[1.55rem] font-bold tracking-normal text-[var(--foreground)] sm:text-[1.7rem]">处理结果</h2>
-              <div className="flex items-center gap-2 text-[var(--muted)]">
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-2 text-[var(--muted)]">
+                {hasResultStatus ? (
+                  <p
+                    key={`${status.kind}-${status.text}`}
+                    className={`truncate rounded-full px-3 py-1 text-sm font-medium transition-colors ${status.kind === "loading" ? "result-status-pill-live" : "result-status-pill"} ${statusClass}`}
+                    aria-live="polite"
+                  >
+                    {status.text}
+                  </p>
+                ) : null}
                 <button
                   type="button"
-                  className="flex min-h-10 min-w-11 items-center justify-center rounded-full text-[var(--muted)] opacity-75 transition hover:bg-[var(--glass-surface)] hover:opacity-100 focus:outline-none focus-visible:ring-4 focus-visible:ring-[var(--focus-ring)] active:bg-[var(--surface-active)]"
+                  className="flex min-h-10 min-w-10 items-center justify-center rounded-full text-[var(--muted)] opacity-80 transition hover:bg-[var(--glass-surface)] hover:opacity-100 focus:outline-none focus-visible:ring-4 focus-visible:ring-[var(--focus-ring)] active:bg-[var(--surface-active)]"
                   onClick={() => {
                     void clearAllCache();
                   }}
                   aria-label="清空缓存"
                 >
-                  <TrashIcon className="h-5 w-6" />
+                  <TrashIcon className="h-[22px] w-[22px]" />
                 </button>
                 <span className="min-w-10 text-right text-base font-medium text-[var(--muted)]">{results.length} 张</span>
               </div>

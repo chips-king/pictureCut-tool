@@ -8,6 +8,10 @@
   --card: #ffffff;
   --surface: #f2f2f4;
   --surface-active: #e8e8ed;
+  --ambient-warm: rgba(255, 236, 214, 0.62);
+  --ambient-cool: rgba(230, 232, 236, 0.86);
+  --ambient-top: #f8f8fa;
+  --ambient-bottom: #f1f2f6;
   --glass-card: rgba(255, 255, 255, 0.72);
   --glass-surface: rgba(255, 255, 255, 0.34);
   --glass-surface-active: rgba(255, 255, 255, 0.54);
@@ -17,21 +21,25 @@
   --glass-line: rgba(29, 29, 31, 0.16);
   --border: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.14);
-  --primary: #0071e3;
-  --primary-active: #0077ed;
+  --primary: #1d1d1f;
+  --primary-active: #000000;
   --primary-foreground: #ffffff;
-  --primary-soft: rgba(0, 113, 227, 0.1);
+  --primary-soft: rgba(29, 29, 31, 0.1);
+  --progress-leading: rgba(29, 29, 31, 0.16);
+  --progress-core: rgba(29, 29, 31, 0.95);
+  --progress-trailing: rgba(29, 29, 31, 0.32);
+  --progress-glow: rgba(29, 29, 31, 0.2);
   --success: #248a3d;
   --success-soft: rgba(36, 138, 61, 0.1);
   --warning: #b26a00;
   --danger: #d70015;
   --danger-soft: rgba(215, 0, 21, 0.1);
   --empty-icon: #9b9ba0;
-  --focus-ring: rgba(0, 113, 227, 0.22);
+  --focus-ring: rgba(29, 29, 31, 0.22);
   --shadow-card: 0 16px 42px rgba(31, 35, 48, 0.11), inset 0 1px 0 rgba(255, 255, 255, 0.72);
   --shadow-glass-result: 0 20px 46px rgba(67, 82, 112, 0.12), inset 0 1px 1px rgba(255, 255, 255, 0.82), inset 0 -1px 0 rgba(255, 255, 255, 0.24);
   --shadow-soft: 0 8px 22px rgba(0, 0, 0, 0.06);
-  --shadow-blue: 0 10px 22px rgba(0, 113, 227, 0.22);
+  --shadow-accent: 0 10px 22px rgba(29, 29, 31, 0.18);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -42,6 +50,10 @@
     --card: #1c1c1e;
     --surface: #2c2c2e;
     --surface-active: #3a3a3c;
+    --ambient-warm: rgba(255, 255, 255, 0.055);
+    --ambient-cool: rgba(255, 255, 255, 0.08);
+    --ambient-top: #050505;
+    --ambient-bottom: #09090b;
     --glass-card: rgba(28, 28, 30, 0.72);
     --glass-surface: rgba(255, 255, 255, 0.08);
     --glass-surface-active: rgba(255, 255, 255, 0.13);
@@ -51,20 +63,24 @@
     --glass-line: rgba(245, 245, 247, 0.16);
     --border: rgba(255, 255, 255, 0.12);
     --border-strong: rgba(255, 255, 255, 0.2);
-    --primary: #2997ff;
-    --primary-active: #46a6ff;
-    --primary-foreground: #ffffff;
-    --primary-soft: rgba(41, 151, 255, 0.16);
+    --primary: #f5f5f7;
+    --primary-active: #ffffff;
+    --primary-foreground: #000000;
+    --primary-soft: rgba(245, 245, 247, 0.16);
+    --progress-leading: rgba(245, 245, 247, 0.14);
+    --progress-core: rgba(245, 245, 247, 0.92);
+    --progress-trailing: rgba(245, 245, 247, 0.3);
+    --progress-glow: rgba(245, 245, 247, 0.22);
     --success: #30d158;
     --success-soft: rgba(48, 209, 88, 0.14);
     --warning: #ffd60a;
     --danger: #ff453a;
     --danger-soft: rgba(255, 69, 58, 0.16);
     --empty-icon: #77777d;
-    --focus-ring: rgba(41, 151, 255, 0.28);
+    --focus-ring: rgba(245, 245, 247, 0.24);
     --shadow-card: 0 18px 48px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     --shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.22);
-    --shadow-blue: 0 10px 22px rgba(41, 151, 255, 0.18);
+    --shadow-accent: 0 10px 22px rgba(245, 245, 247, 0.12);
     --shadow-glass-result: 0 20px 46px rgba(0, 0, 0, 0.24), inset 0 1px 1px rgba(255, 255, 255, 0.12), inset 0 -1px 0 rgba(255, 255, 255, 0.08);
   }
 }
@@ -76,9 +92,9 @@
 html {
   min-height: 100%;
   background:
-    radial-gradient(circle at 12% 8%, rgba(255, 236, 214, 0.62), transparent 34rem),
-    radial-gradient(circle at 91% 13%, rgba(214, 230, 255, 0.82), transparent 36rem),
-    linear-gradient(180deg, #f8f8fa 0%, var(--background) 52%, #f1f2f6 100%);
+    radial-gradient(circle at 12% 8%, var(--ambient-warm), transparent 34rem),
+    radial-gradient(circle at 91% 13%, var(--ambient-cool), transparent 36rem),
+    linear-gradient(180deg, var(--ambient-top) 0%, var(--background) 52%, var(--ambient-bottom) 100%);
   -webkit-text-size-adjust: 100%;
   overscroll-behavior-y: none;
 }
@@ -87,9 +103,9 @@ body {
   min-height: 100%;
   margin: 0;
   background:
-    radial-gradient(circle at 12% 8%, rgba(255, 236, 214, 0.62), transparent 34rem),
-    radial-gradient(circle at 91% 13%, rgba(214, 230, 255, 0.82), transparent 36rem),
-    linear-gradient(180deg, #f8f8fa 0%, var(--background) 52%, #f1f2f6 100%);
+    radial-gradient(circle at 12% 8%, var(--ambient-warm), transparent 34rem),
+    radial-gradient(circle at 91% 13%, var(--ambient-cool), transparent 36rem),
+    linear-gradient(180deg, var(--ambient-top) 0%, var(--background) 52%, var(--ambient-bottom) 100%);
   color: var(--foreground);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   text-rendering: optimizeLegibility;
@@ -212,4 +228,178 @@ button {
 .liquid-result-empty > * {
   position: relative;
   z-index: 1;
+}
+
+.result-status-pill {
+  animation: result-status-pill 2200ms cubic-bezier(0.18, 0.82, 0.18, 1) both;
+  transform-origin: right center;
+  will-change: opacity, transform, filter;
+}
+
+.result-status-pill-live {
+  animation: result-status-pill-live 680ms cubic-bezier(0.16, 0.86, 0.18, 1) both;
+  transform-origin: right center;
+  will-change: opacity, transform, filter;
+}
+
+.processing-progress {
+  position: relative;
+  height: 0.5rem;
+  animation: processing-progress-shell 780ms cubic-bezier(0.16, 0.86, 0.18, 1) both;
+  transform-origin: center;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.04);
+  will-change: opacity, transform, filter;
+}
+
+.processing-progress-leaving {
+  animation: processing-progress-shell-out 620ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.processing-progress-bar {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 42%;
+  background:
+    linear-gradient(90deg, var(--progress-leading), var(--progress-core) 52%, var(--progress-trailing)),
+    var(--primary);
+  box-shadow:
+    0 0 18px var(--progress-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.48);
+  animation: processing-progress-bar 1850ms cubic-bezier(0.45, 0, 0.2, 1) infinite;
+  will-change: transform;
+}
+
+.processing-progress::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.48), transparent);
+  transform: translateX(-100%);
+  animation: processing-progress-glint 1850ms cubic-bezier(0.45, 0, 0.2, 1) infinite;
+}
+
+@keyframes result-status-pill {
+  0% {
+    opacity: 0;
+    filter: blur(4px);
+    transform: translateX(12px) scale(0.96);
+  }
+
+  16% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateX(0) scale(1);
+  }
+
+  78% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateX(0) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateX(8px) scale(0.98);
+  }
+}
+
+@keyframes result-status-pill-live {
+  0% {
+    opacity: 0;
+    filter: blur(4px);
+    transform: translateX(12px) scale(0.96);
+  }
+
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes processing-progress-shell {
+  0% {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(-5px) scaleX(0.62) scaleY(0.55);
+  }
+
+  58% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scaleX(1.025) scaleY(1);
+  }
+
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scaleX(1) scaleY(1);
+  }
+}
+
+@keyframes processing-progress-shell-out {
+  0% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scaleX(1) scaleY(1);
+  }
+
+  100% {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(-6px) scaleX(0.7) scaleY(0.5);
+  }
+}
+
+@keyframes processing-progress-bar {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  100% {
+    transform: translateX(240%);
+  }
+}
+
+@keyframes processing-progress-glint {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .result-status-pill {
+    animation: result-status-pill-reduced 2200ms linear both;
+  }
+
+  .result-status-pill-live {
+    animation: none;
+  }
+
+  .processing-progress-bar,
+  .processing-progress::after,
+  .processing-progress,
+  .processing-progress-leaving {
+    animation: none;
+  }
+}
+
+@keyframes result-status-pill-reduced {
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  10%,
+  86% {
+    opacity: 1;
+  }
 }
