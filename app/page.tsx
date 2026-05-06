@@ -33,6 +33,10 @@ type UploadStatus = {
   kind: "idle" | "loading" | "success" | "error";
 };
 
+type IconProps = {
+  className?: string;
+};
+
 const TEN_MINUTES = 10 * 60 * 1000;
 const RESULT_CACHE_VERSION = 3;
 const CONTENT_SOURCE_KEY_PATTERN = /^\d+:[a-f0-9]{64}$/;
@@ -72,6 +76,15 @@ function mergeUniqueResults(newItems: StoredResult[], currentItems: StoredResult
   }
 
   return merged;
+}
+
+function TrashIcon({ className }: IconProps) {
+  return (
+    <svg className={className} aria-hidden="true" viewBox="0 0 32 32" fill="none">
+      <path d="M7.5 10h17M12.8 7h6.4M10.8 10l.8 14a3.1 3.1 0 0 0 3.1 2.9h2.6a3.1 3.1 0 0 0 3.1-2.9l.8-14" stroke="currentColor" strokeWidth="2.35" strokeLinecap="round" />
+      <path d="M14 14v8M18 14v8" stroke="currentColor" strokeWidth="2.35" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 export default function Home() {
@@ -134,8 +147,13 @@ export default function Home() {
       return;
     }
 
+    if (imageFiles.length > 10) {
+      setStatus({ text: "一次最多选择 10 张图片", kind: "error" });
+      return;
+    }
+
     isProcessingRef.current = true;
-    setStatus({ text: "正在处理...", kind: "loading" });
+    setStatus({ text: `正在处理 ${imageFiles.length} 张图片`, kind: "loading" });
 
     try {
       const keyedFiles = await Promise.all(
@@ -198,6 +216,19 @@ export default function Home() {
     }
   }, []);
 
+  useEffect(() => {
+    const handlePaste = (event: ClipboardEvent) => {
+      const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith("image/"));
+      if (files.length > 0) {
+        event.preventDefault();
+        void processFiles(files);
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [processFiles]);
+
   const handleDelete = async (id: string) => {
     await deleteStoredResult(id);
     setResults((current) => current.filter((item) => item.id !== id));
@@ -242,116 +273,152 @@ export default function Home() {
   };
 
   const statusClass = useMemo(() => {
-    if (status.kind === "error") return "text-[var(--danger)]";
-    if (status.kind === "success") return "text-[var(--success)]";
-    if (status.kind === "loading") return "text-[var(--foreground)]";
-    return "text-[var(--muted)]";
+    if (status.kind === "error") return "text-[var(--danger)] bg-[var(--danger-soft)]";
+    if (status.kind === "success") return "text-[var(--success)] bg-[var(--success-soft)]";
+    if (status.kind === "loading") return "text-[var(--primary)] bg-[var(--primary-soft)]";
+    return "text-[var(--muted)] bg-transparent";
   }, [status.kind]);
 
+  const isProcessing = status.kind === "loading";
+  const hasUploadStatus = status.kind !== "idle";
+
   return (
-    <main className="min-h-screen px-4 pb-[calc(24px+env(safe-area-inset-bottom))] pt-[calc(24px+env(safe-area-inset-top))]">
-      <div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
-        <header className="pt-3">
-          <h1 className="text-3xl font-semibold tracking-normal text-[var(--foreground)]">截图剥离图片工具</h1>
-          <p className="mt-2 text-base leading-6 text-[var(--muted)]">上传截图，自动裁切中间图片区域</p>
+    <main className="min-h-dvh overflow-hidden px-5 pb-[calc(112px+env(safe-area-inset-bottom))] pt-[calc(42px+env(safe-area-inset-top))] sm:px-6 lg:px-8 lg:pb-16 lg:pt-14">
+      <div className="mx-auto flex w-full max-w-[42rem] flex-col gap-7 lg:gap-8">
+        <header className="pt-3 text-left sm:text-center lg:pt-0">
+          <h1 className="max-w-[15ch] text-[2rem] font-bold leading-[1.12] tracking-normal text-[var(--foreground)] sm:mx-auto sm:max-w-none sm:text-[2.6rem] lg:text-5xl">
+            小红书截图剥离图片工具
+          </h1>
+          <p className="mt-3 text-[1rem] leading-7 text-[var(--muted)]">
+            专门为小红书 UI 进行识别截图，方便提取素材
+          </p>
         </header>
 
-        <section
-          className={[
-            "rounded-3xl border bg-[var(--card)] p-5 shadow-sm transition-colors",
-            isDragging ? "border-[var(--foreground)]" : "border-[var(--border)]"
-          ].join(" ")}
-          onDragOver={(event) => {
-            event.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={(event) => {
-            event.preventDefault();
-            setIsDragging(false);
-            void processFiles(event.dataTransfer.files);
-          }}
-        >
-          <button
-            type="button"
-            className="flex min-h-44 w-full flex-col items-center justify-center rounded-2xl border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-4 py-8 text-center active:bg-[var(--surface-active)]"
-            onClick={() => inputRef.current?.click()}
-          >
-            <span className="text-lg font-medium text-[var(--foreground)]">选择图片</span>
-            <span className="mt-2 max-w-xs text-sm leading-5 text-[var(--muted)]">支持单张或多张截图，也可以拖拽上传</span>
-          </button>
-          <input
-            ref={inputRef}
-            className="hidden"
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={(event) => {
-              if (event.target.files) {
-                void processFiles(event.target.files);
-              }
+        <div className="flex flex-col gap-8">
+          <section
+            className={[
+              "liquid-card liquid-upload-card rounded-[26px] border bg-[var(--glass-card)] p-4 shadow-[var(--shadow-card)] backdrop-blur-2xl transition duration-200 sm:p-5",
+              isDragging ? "border-[var(--primary)] ring-4 ring-[var(--primary-soft)]" : "border-[var(--border)]"
+            ].join(" ")}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setIsDragging(true);
             }}
-          />
-          <p className={`mt-4 min-h-6 text-sm ${statusClass}`}>{status.text}</p>
-        </section>
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setIsDragging(false);
+              void processFiles(event.dataTransfer.files);
+            }}
+          >
+            <button
+              type="button"
+              className="liquid-dropzone liquid-upload-empty group flex min-h-56 w-full flex-col items-center justify-center rounded-[22px] border border-dashed border-[var(--dash-border)] bg-[var(--glass-surface)] px-5 py-9 text-center transition duration-200 hover:bg-[var(--glass-surface-active)] focus:outline-none focus-visible:ring-4 focus-visible:ring-[var(--focus-ring)] active:scale-[0.99] lg:min-h-[17.5rem]"
+              onClick={() => inputRef.current?.click()}
+              aria-label="选择图片上传"
+            >
+              <span className="text-[1.32rem] font-medium leading-8 text-[var(--foreground)]">选择图片</span>
+              <span className="mt-3 max-w-xs text-[0.95rem] leading-6 text-[var(--muted)]">支持单张或多张截图，也可以拖拽上传</span>
+            </button>
+            <input
+              ref={inputRef}
+              className="hidden"
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(event) => {
+                if (event.target.files) {
+                  void processFiles(event.target.files);
+                }
+              }}
+            />
+            {hasUploadStatus ? (
+              <div className="mt-4 flex min-h-8 items-center px-1">
+                <p className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${statusClass}`} aria-live="polite">
+                  {status.text}
+                </p>
+              </div>
+            ) : null}
+            {isProcessing ? (
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[var(--surface)]">
+                <div className="h-full w-2/3 rounded-full bg-[var(--primary)] transition-all" />
+              </div>
+            ) : null}
+          </section>
 
-        <section className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-[var(--foreground)]">处理结果</h2>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                className="text-sm font-medium text-[var(--muted)] active:text-[var(--foreground)]"
-                onClick={() => {
-                  void clearAllCache();
-                }}
-              >
-                清空缓存
-              </button>
-              <span className="text-sm text-[var(--muted)]">{results.length} 张</span>
+          <section className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-[1.55rem] font-bold tracking-normal text-[var(--foreground)] sm:text-[1.7rem]">处理结果</h2>
+              <div className="flex items-center gap-2 text-[var(--muted)]">
+                <button
+                  type="button"
+                  className="flex min-h-10 min-w-11 items-center justify-center rounded-full text-[var(--muted)] opacity-75 transition hover:bg-[var(--glass-surface)] hover:opacity-100 focus:outline-none focus-visible:ring-4 focus-visible:ring-[var(--focus-ring)] active:bg-[var(--surface-active)]"
+                  onClick={() => {
+                    void clearAllCache();
+                  }}
+                  aria-label="清空缓存"
+                >
+                  <TrashIcon className="h-5 w-6" />
+                </button>
+                <span className="min-w-10 text-right text-base font-medium text-[var(--muted)]">{results.length} 张</span>
+              </div>
             </div>
-          </div>
 
-          {results.length === 0 ? (
-            <div className="rounded-3xl border border-[var(--border)] bg-[var(--card)] px-5 py-10 text-center text-sm text-[var(--muted)] shadow-sm">
-              暂无结果
-            </div>
-          ) : (
-            results.map((item) => (
-              <article key={item.id} className="rounded-3xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-sm">
-                <div className="flex flex-col gap-1">
-                  <h3 className="break-words text-base font-medium text-[var(--foreground)]">{item.filename}</h3>
-                  <p className="text-sm text-[var(--muted)]">
-                    {item.width} x {item.height} · 置信度 {Math.round(item.confidence * 100)}%
-                  </p>
+            {results.length === 0 ? (
+              <div className="liquid-card liquid-result-card rounded-[26px] border border-[var(--glass-line)] bg-[var(--glass-card)] p-4 shadow-[var(--shadow-card)] backdrop-blur-2xl sm:p-5">
+                <div className="liquid-result-empty flex min-h-40 flex-col items-center justify-center rounded-[22px] border border-[var(--glass-line)] bg-[var(--result-glass-surface)] px-6 py-9 text-center lg:min-h-[13.5rem]">
+                  <p className="text-[1rem] leading-7 text-[var(--muted)]">裁切结果会显示在这里</p>
                 </div>
+              </div>
+            ) : (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {results.map((item) => (
+                  <article key={item.id} className="liquid-card rounded-[26px] border border-[var(--border)] bg-[var(--glass-card)] p-4 shadow-[var(--shadow-card)] backdrop-blur-2xl">
+                    <div className="flex flex-col gap-1">
+                      <h3 className="break-words text-base font-semibold text-[var(--foreground)]">{item.filename}</h3>
+                      <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
+                        <span>
+                          {item.width} x {item.height}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span className={item.confidence >= 0.8 ? "text-[var(--success)]" : "text-[var(--warning)]"}>
+                          {item.confidence >= 0.8 ? "高可信" : "需检查"} {Math.round(item.confidence * 100)}%
+                        </span>
+                      </div>
+                    </div>
 
-                <div className="mt-4 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
-                  <img className="h-auto w-full" src={item.dataUrl} alt={`${item.filename} 裁切预览`} />
-                </div>
+                    <div className="mt-4 overflow-hidden rounded-[20px] border border-[var(--border)] bg-[var(--surface)]">
+                      <img className="h-auto w-full" src={item.dataUrl} alt={`${item.filename} 裁切预览`} />
+                    </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    className="min-h-11 rounded-2xl bg-[var(--primary)] px-4 text-sm font-medium text-[var(--primary-foreground)] active:bg-[var(--primary-active)]"
-                    onClick={() => {
-                      void saveImage(item);
-                    }}
-                  >
-                    保存图片
-                  </button>
-                  <button
-                    type="button"
-                    className="min-h-11 rounded-2xl bg-[var(--surface)] px-4 text-sm font-medium text-[var(--foreground)] active:bg-[var(--surface-active)]"
-                    onClick={() => void handleDelete(item.id)}
-                  >
-                    删除
-                  </button>
-                </div>
-              </article>
-            ))
-          )}
-        </section>
+                    <div className="mt-4 grid grid-cols-2 gap-3">
+                      <button
+                        type="button"
+                        className="min-h-12 rounded-[14px] bg-[var(--primary)] px-4 text-sm font-semibold text-[var(--primary-foreground)] transition hover:bg-[var(--primary-active)] focus:outline-none focus-visible:ring-4 focus-visible:ring-[var(--focus-ring)] active:scale-[0.98]"
+                        onClick={() => {
+                          void saveImage(item);
+                        }}
+                      >
+                        保存图片
+                      </button>
+                      <button
+                        type="button"
+                        className="min-h-12 rounded-[14px] bg-[var(--surface)] px-4 text-sm font-semibold text-[var(--foreground)] transition hover:bg-[var(--surface-active)] focus:outline-none focus-visible:ring-4 focus-visible:ring-[var(--focus-ring)] active:scale-[0.98]"
+                        onClick={() => void handleDelete(item.id)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <p className="px-1 text-center text-xs leading-6 text-[var(--muted)] opacity-80">
+          免责声明：提取素材如涉及原作者隐私或相关权益，请自行获得授权；因使用本工具产生的侵权或隐私问题，本工具不承担责任。
+        </p>
       </div>
     </main>
   );

@@ -2,13 +2,13 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "截图剥离图片工具",
-  description: "上传截图，自动裁切中间图片区域",
+  title: "小红书截图剥离图片工具",
+  description: "专门为小红书 UI 进行识别截图，方便提取素材",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "截图剥图"
+    title: "小红书剥图"
   },
   icons: {
     icon: [

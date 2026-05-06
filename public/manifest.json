@@ -1,7 +1,7 @@
 {
-  "name": "截图剥离图片工具",
-  "short_name": "截图剥图",
-  "description": "上传截图，自动裁切中间图片区域",
+  "name": "小红书截图剥离图片工具",
+  "short_name": "小红书剥图",
+  "description": "专门为小红书 UI 进行识别截图，方便提取素材",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

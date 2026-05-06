@@ -18,7 +18,7 @@ export type StoredResult = {
   expiresAt: number;
 };
 
-const DB_NAME = "pictureCut-tool";
+const DB_NAME = "xhs-pictureCut-tool";
 const STORE_NAME = "results";
 const DB_VERSION = 2;
 const CONTENT_SOURCE_KEY_PATTERN = /^\d+:[a-f0-9]{64}$/;

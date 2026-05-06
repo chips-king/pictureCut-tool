@@ -1,6 +1,10 @@
-# pictureCut-tool
+# xhs-pictureCut-tool
 
-轻量级 PWA 网站，用于剥离手机截图中的图片。用户上传截图后，服务端使用 `sharp` 读取像素并自动裁切中间图片区域，不引入 OpenCV.js，不长期保存图片。
+轻量级 PWA 网站，专门为小红书 UI 进行识别截图，方便提取素材。用户上传小红书截图后，服务端使用 `sharp` 读取像素并自动裁切中间图片区域，不引入 OpenCV.js，不长期保存图片。
+
+## 免责声明
+
+提取素材如涉及原作者隐私或相关权益，请自行获得授权；因使用本工具产生的侵权或隐私问题，本工具不承担责任。
 
 生产环境目标域名：
 
@@ -120,9 +124,9 @@ https://pictureCut.vercel.app/api/process
 ```bash
 git init
 git add .
-git commit -m "Initial pictureCut-tool"
+git commit -m "Initial xhs-pictureCut-tool"
 git branch -M main
-git remote add origin https://github.com/你的用户名/pictureCut-tool.git
+git remote add origin https://github.com/你的用户名/xhs-pictureCut-tool.git
 git push -u origin main
 ```
 
@@ -130,7 +134,7 @@ git push -u origin main
 
 1. 登录 [Vercel](https://vercel.com)。
 2. 点击 `Add New Project`。
-3. 选择刚上传到 GitHub 的 `pictureCut-tool` 仓库。
+3. 选择刚上传到 GitHub 的 `xhs-pictureCut-tool` 仓库。
 4. Framework Preset 选择 `Next.js`。
 5. Build Command 保持 `npm run build`。
 6. Output Directory 保持默认。
