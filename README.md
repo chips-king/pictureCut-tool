@@ -1,20 +1,38 @@
 # xhs-pictureCut-tool
 
-轻量级 PWA 网站，专门为小红书 UI 进行识别截图，方便提取素材。用户上传小红书截图后，服务端使用 `sharp` 读取像素并自动裁切中间图片区域，不引入 OpenCV.js，不长期保存图片。
+[English README](./README.en.md)
 
-## 免责声明
+一个面向小红书截图的轻量级 PWA 工具。上传小红书截图后，服务端使用 `sharp` 读取像素并自动裁切中间图片区域，方便快速提取截图里的素材图片。
 
-提取素材如涉及原作者隐私或相关权益，请自行获得授权；因使用本工具产生的侵权或隐私问题，本工具不承担责任。
-
-生产环境目标域名：
+## 在线地址
 
 ```text
-https://pictureCut.vercel.app
+https://picture-cut-tool.vercel.app/
 ```
+
+API 地址：
+
+```text
+https://picture-cut-tool.vercel.app/api/process
+```
+
+## 功能
+
+- 支持点击选择、拖拽上传和粘贴上传图片
+- 支持单张或多张截图处理
+- 一次最多处理 10 张图片，每张最大 12MB
+- 自动识别小红书 UI 中间图片区域并裁切
+- 每张结果单独显示预览、保存图片、删除按钮
+- 最近结果保存到浏览器 IndexedDB
+- IndexedDB 结果保留 10 分钟，过期自动清理
+- 支持清空缓存
+- 支持 PWA，可添加到 iPhone 主屏幕
+- 支持浅色模式和深色模式
+- 图片只在请求处理中临时进入 Vercel Serverless Function 内存，不写入数据库或长期服务器存储
 
 ## 本地运行
 
-先安装依赖：
+安装依赖：
 
 ```bash
 npm install
@@ -37,17 +55,6 @@ http://localhost:3000
 ```bash
 npm run build
 ```
-
-## 功能
-
-- 首页上传截图，支持点击选择和拖拽上传
-- 支持单张和多张图片处理
-- 每张图片单独显示预览、保存图片、删除按钮
-- 多张结果不会互相覆盖
-- 最近结果保存到浏览器 IndexedDB
-- IndexedDB 结果 TTL 为 10 分钟，过期自动清理
-- PWA 支持添加到 iPhone 主屏幕
-- 图片只在请求处理中临时进入 Vercel Serverless Function 内存，不写入数据库或长期服务器存储
 
 ## 裁切逻辑
 
@@ -106,7 +113,7 @@ npm run build
 3. URL 填写：
 
 ```text
-https://pictureCut.vercel.app/api/process
+https://picture-cut-tool.vercel.app/api/process
 ```
 
 4. 方法选择 `POST`。
@@ -117,33 +124,30 @@ https://pictureCut.vercel.app/api/process
 
 多张图片也使用同一个字段名 `images` 重复传入。
 
-## 上传到 GitHub
+## 隐私与免责声明
 
-在项目目录执行：
+本工具只提供截图素材提取能力，不会判断素材的版权归属、授权状态或隐私风险。提取素材如涉及原作者隐私或相关权益，请自行获得授权；因使用本工具产生的侵权或隐私问题，本工具不承担责任。
 
-```bash
-git init
-git add .
-git commit -m "Initial xhs-pictureCut-tool"
-git branch -M main
-git remote add origin https://github.com/你的用户名/xhs-pictureCut-tool.git
-git push -u origin main
-```
+英文免责声明由 Codex 翻译并同步维护在 [README.en.md](./README.en.md) 中。
+
+## Codex 贡献
+
+本项目的前端体验、深色模式、动效、项目命名、README 中英文文档和免责声明英文翻译由 Codex 协助完成。Codex 也参与了本地构建检查、Git 提交整理和部署 URL 核验。
 
 ## 部署到 Vercel
 
 1. 登录 [Vercel](https://vercel.com)。
 2. 点击 `Add New Project`。
-3. 选择刚上传到 GitHub 的 `xhs-pictureCut-tool` 仓库。
+3. 选择 GitHub 仓库 `chips-king/pictureCut-tool`。
 4. Framework Preset 选择 `Next.js`。
 5. Build Command 保持 `npm run build`。
 6. Output Directory 保持默认。
 7. 点击 Deploy。
 
-部署完成后，Vercel 会自动分配一个 HTTPS 域名。你可以在项目的 `Domains` 页面看到自动域名，例如：
+部署完成后，项目地址为：
 
 ```text
-https://pictureCut.vercel.app
+https://picture-cut-tool.vercel.app/
 ```
 
 部署成功后，本地的 `npm run dev` 可以关闭。网站运行在 Vercel，不需要长期运行本地服务器，也不需要购买域名、云服务器或数据库。
